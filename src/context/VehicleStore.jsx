@@ -179,10 +179,15 @@ export function VehicleProvider({ children }) {
     });
   }, []);
 
+  // 明确设置驾驶状态：true=开始驾驶，false=停车
+  const setDriving = useCallback((value) => {
+    setVehicle(prev => ({ ...prev, isDriving: value }));
+  }, []);
+
   const getDrivingDuration = useCallback(() => drivingDurationRef.current, []);
 
   return (
-    <VehicleContext.Provider value={{ vehicle, safety, weather, toggleDriving, getDrivingDuration }}>
+    <VehicleContext.Provider value={{ vehicle, safety, weather, toggleDriving, setDriving, getDrivingDuration }}>
       {children}
     </VehicleContext.Provider>
   );

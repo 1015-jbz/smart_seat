@@ -15,7 +15,7 @@ function ScanLine() {
 }
 
 export default function DrivingSafety() {
-  const { safety, getDrivingDuration } = useVehicle();
+  const { safety, getDrivingDuration, vehicle } = useVehicle();
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState(null);
   const [drivingTime, setDrivingTime] = useState(0);
@@ -26,7 +26,7 @@ export default function DrivingSafety() {
   const alarmTimerRef = useRef(null);
   const prevAlertLevelRef = useRef('normal');
   const [alarmEnabled, setAlarmEnabled] = useState(true);
-  const [greetingPlayed, setGreetingPlayed] = useState(false);
+  const greetingPlayedRef = useRef(false);
 
   const alertColors = { normal: '#00ff88', warning: '#ffa502', danger: '#ff4757' };
   const alertLabels = { normal: '正常', warning: '预警', danger: '危险' };
@@ -50,8 +50,8 @@ export default function DrivingSafety() {
       }
       setCameraActive(true);
 
-      // 摄像头启动后自动问候
-      if (!greetingPlayed) {
+      // 摄像头启动后自动问候（仅首次）
+      if (!greetingPlayedRef.current) {
         const now = new Date();
         const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
         const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
@@ -67,7 +67,7 @@ export default function DrivingSafety() {
           if (zhVoice) utter.voice = zhVoice;
           window.speechSynthesis.speak(utter);
         }
-        setGreetingPlayed(true);
+        greetingPlayedRef.current = true;
       }
     } catch (err) {
       console.error('摄像头启动失败:', err);
@@ -89,6 +89,16 @@ export default function DrivingSafety() {
     if (videoRef.current) videoRef.current.srcObject = null;
     setCameraActive(false);
   }, []);
+
+  // 摄像头随驾驶状态自动开关：驾驶开始自动打开，驾驶结束自动关闭
+  useEffect(() => {
+    if (vehicle.isDriving) {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicle.isDriving]);
 
   // 疲劳警报声（Web Audio API 生成）
   const playAlarm = useCallback(() => {
@@ -246,11 +256,18 @@ export default function DrivingSafety() {
                       <RotateCcw size={12} /> 重试
                     </button>
                   </>
+                ) : vehicle.isDriving ? (
+                  <>
+                    <Video size={40} style={{ color: '#00d4ff', opacity: 0.4 }} />
+                    <div className="text-xs" style={{ color: '#00d4ff', opacity: 0.6 }}>
+                      正在启动摄像头...
+                    </div>
+                  </>
                 ) : (
                   <>
-                    <Video size={40} style={{ color: 'var(--color-text-secondary)', opacity: 0.3 }} />
+                    <CameraOff size={40} style={{ color: 'var(--color-text-secondary)', opacity: 0.3 }} />
                     <div className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.5 }}>
-                      点击下方按钮启动摄像头
+                      已停车 · 开始驾驶后摄像头自动开启
                     </div>
                   </>
                 )}
@@ -305,23 +322,33 @@ export default function DrivingSafety() {
             )}
           </div>
 
-          {/* 摄像头控制按钮 */}
+          {/* 摄像头状态提示（随驾驶状态自动开关）*/}
           <div className="flex items-center gap-3 mt-4">
-            {!cameraActive ? (
-              <button onClick={startCamera}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all hover:scale-105 active:scale-95"
-                style={{
-                  background: 'linear-gradient(135deg, #00d4ff, #0099cc)',
-                  color: '#fff',
-                  boxShadow: '0 4px 15px rgba(0,212,255,0.3)',
-                }}>
-                <Video size={16} /> 启动摄像头
-              </button>
+            {vehicle.isDriving ? (
+              cameraActive ? (
+                <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+                  style={{ background: 'rgba(0,255,136,0.1)', color: '#00ff88', border: '1px solid rgba(0,255,136,0.25)' }}>
+                  <Camera size={14} />
+                  监控中 · 摄像头已随驾驶自动开启
+                </div>
+              ) : cameraError ? (
+                <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+                  style={{ background: 'rgba(255,71,87,0.1)', color: '#ff4757', border: '1px solid rgba(255,71,87,0.25)' }}>
+                  <CameraOff size={14} />
+                  {cameraError} · 请允许摄像头权限
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+                  style={{ background: 'rgba(0,212,255,0.1)', color: '#00d4ff', border: '1px solid rgba(0,212,255,0.25)' }}>
+                  <Camera size={14} />
+                  正在启动摄像头...
+                </div>
+              )
             ) : (
               <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
-                style={{ background: 'rgba(0,255,136,0.1)', color: '#00ff88', border: '1px solid rgba(0,255,136,0.25)' }}>
-                <Camera size={14} />
-                监控中 · 持续监测驾驶员状态
+                style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
+                <CameraOff size={14} />
+                已停车 · 摄像头已关闭，开始驾驶后自动开启
               </div>
             )}
           </div>

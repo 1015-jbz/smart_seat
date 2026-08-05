@@ -95,7 +95,7 @@ function MiniGauge({ value, max, label, unit, color, icon: Icon }) {
 }
 
 export default function VehicleDashboard() {
-  const { vehicle, toggleDriving } = useVehicle();
+  const { vehicle, toggleDriving, setDriving } = useVehicle();
   const [idleSeconds, setIdleSeconds] = useState(0);
 
   useEffect(() => {
@@ -143,13 +143,13 @@ export default function VehicleDashboard() {
           <div className="flex gap-3 mt-5">
             <button
               className={`glow-btn flex items-center gap-2 ${vehicle.isDriving ? 'active' : ''}`}
-              onClick={toggleDriving}
+              onClick={() => setDriving(true)}
             >
               <Play size={16} /> 开始驾驶
             </button>
             <button
               className={`glow-btn flex items-center gap-2 ${!vehicle.isDriving ? 'active' : ''}`}
-              onClick={toggleDriving}
+              onClick={() => setDriving(false)}
               style={!vehicle.isDriving ? { borderColor: '#ff4757', background: 'rgba(255,71,87,0.2)', color: '#ff4757' } : {}}
             >
               <Square size={16} /> 停车
