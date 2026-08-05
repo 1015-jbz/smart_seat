@@ -318,11 +318,11 @@ export default function DrivingSafety() {
                 <Video size={16} /> 启动摄像头
               </button>
             ) : (
-              <button onClick={stopCamera}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all hover:scale-105 active:scale-95"
-                style={{ background: 'rgba(255,71,87,0.15)', color: '#ff4757', border: '1px solid rgba(255,71,87,0.3)' }}>
-                <VideoOff size={14} /> 关闭
-              </button>
+              <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+                style={{ background: 'rgba(0,255,136,0.1)', color: '#00ff88', border: '1px solid rgba(0,255,136,0.25)' }}>
+                <Camera size={14} />
+                监控中 · 持续监测驾驶员状态
+              </div>
             )}
           </div>
         </div>
