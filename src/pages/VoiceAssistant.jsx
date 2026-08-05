@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Bell } from 'lucide-react';
 import { voiceMessages, voiceSettings } from '../data/mockData';
 
@@ -41,6 +42,7 @@ function AudioVisualizer({ analyser, isActive }) {
 }
 
 export default function VoiceAssistant() {
+  const { username } = useOutletContext();
   const [messages, setMessages] = useState(voiceMessages);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -375,6 +377,9 @@ export default function VoiceAssistant() {
                     {msg.role === 'user' ? <User size={16} style={{ color: '#00d4ff' }} /> : <Bot size={16} style={{ color: '#f472b6' }} />}
                   </div>
                   <div>
+                    {msg.role === 'user' && (
+                      <div className="text-xs mb-1 text-right" style={{ color: 'var(--color-text-secondary)' }}>{username}</div>
+                    )}
                     <div className={`rounded-2xl px-4 py-2.5 text-sm ${msg.role === 'user' ? 'rounded-tr-sm' : 'rounded-tl-sm'}`} style={{
                       background: msg.role === 'user'
                         ? 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,255,136,0.1))'
