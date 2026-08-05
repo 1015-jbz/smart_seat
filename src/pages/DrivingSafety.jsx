@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Eye, Activity, Brain, Clock, Camera, Video, VideoOff, RotateCcw, CameraOff, Timer } from 'lucide-react';
+import { Shield, AlertTriangle, Eye, Activity, Brain, Clock, Camera, Video, VideoOff, RotateCcw, CameraOff, Timer, Volume2, VolumeX } from 'lucide-react';
 import GaugeChart from '../components/GaugeChart';
 import ProgressBar from '../components/ProgressBar';
 import { useVehicle } from '../context/VehicleStore';
@@ -22,6 +22,11 @@ export default function DrivingSafety() {
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const alarmTimerRef = useRef(null);
+  const prevAlertLevelRef = useRef('normal');
+  const [alarmEnabled, setAlarmEnabled] = useState(true);
+  const [greetingPlayed, setGreetingPlayed] = useState(false);
 
   const alertColors = { normal: '#00ff88', warning: '#ffa502', danger: '#ff4757' };
   const alertLabels = { normal: '正常', warning: '预警', danger: '危险' };
@@ -44,6 +49,26 @@ export default function DrivingSafety() {
         await videoRef.current.play();
       }
       setCameraActive(true);
+
+      // 摄像头启动后自动问候
+      if (!greetingPlayed) {
+        const now = new Date();
+        const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
+        const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
+        const hour = now.getHours();
+        let greet = hour < 6 ? '凌晨好' : hour < 12 ? '上午好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
+        const greeting = `${greet}！今天是${dateStr}。当前天气晴朗，气温28度。欢迎您驾驶，小龙随时为您服务。`;
+        if (window.speechSynthesis) {
+          const utter = new SpeechSynthesisUtterance(greeting);
+          utter.lang = 'zh-CN';
+          utter.rate = 1;
+          const voices = window.speechSynthesis.getVoices();
+          const zhVoice = voices.find(v => v.lang.includes('zh'));
+          if (zhVoice) utter.voice = zhVoice;
+          window.speechSynthesis.speak(utter);
+        }
+        setGreetingPlayed(true);
+      }
     } catch (err) {
       console.error('摄像头启动失败:', err);
       let msg = '摄像头访问失败';
@@ -65,10 +90,64 @@ export default function DrivingSafety() {
     setCameraActive(false);
   }, []);
 
+  // 疲劳警报声（Web Audio API 生成）
+  const playAlarm = useCallback(() => {
+    if (!alarmEnabled) return;
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') ctx.resume();
+      // 三声急促蜂鸣
+      const times = [0, 0.25, 0.5];
+      times.forEach(delay => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.3, ctx.currentTime + delay);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + delay + 0.15);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + 0.15);
+      });
+    } catch (e) { console.warn('警报播放失败:', e); }
+  }, [alarmEnabled]);
+
+  // 疲劳告警 + 语音提醒
+  useEffect(() => {
+    const level = safety.alertLevel;
+    if (level === 'danger' && alarmEnabled) {
+      playAlarm();
+      // 语音提醒（每10秒一次，避免频繁）
+      if (!alarmTimerRef.current) {
+        if (window.speechSynthesis) {
+          const utter = new SpeechSynthesisUtterance('警告！您已处于疲劳状态，请注意安全，建议立即休息。');
+          utter.lang = 'zh-CN';
+          utter.rate = 1.1;
+          window.speechSynthesis.speak(utter);
+        }
+        alarmTimerRef.current = setTimeout(() => { alarmTimerRef.current = null; }, 10000);
+      }
+    } else if (level === 'warning' && alarmEnabled) {
+      // 预警时只语音提醒，不播放警报声
+      if (prevAlertLevelRef.current === 'normal' && window.speechSynthesis) {
+        const utter = new SpeechSynthesisUtterance('您有些疲劳了，请注意休息。');
+        utter.lang = 'zh-CN';
+        window.speechSynthesis.speak(utter);
+      }
+    }
+    prevAlertLevelRef.current = level;
+  }, [safety.alertLevel, alarmEnabled, playAlarm]);
+
   // 组件卸载清理
   useEffect(() => {
     return () => {
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if (audioCtxRef.current) audioCtxRef.current.close();
+      if (alarmTimerRef.current) clearTimeout(alarmTimerRef.current);
     };
   }, []);
 
@@ -118,6 +197,18 @@ export default function DrivingSafety() {
               {cameraActive ? '监控中' : '未连接'}
             </span>
           </div>
+          <button onClick={() => setAlarmEnabled(!alarmEnabled)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors"
+            style={{
+              background: alarmEnabled ? 'rgba(255,71,87,0.1)' : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${alarmEnabled ? 'rgba(255,71,87,0.3)' : 'var(--color-border)'}`,
+            }}
+            title={alarmEnabled ? '关闭疲劳警报' : '开启疲劳警报'}>
+            {alarmEnabled ? <Volume2 size={13} style={{ color: '#ff4757' }} /> : <VolumeX size={13} style={{ color: 'var(--color-text-secondary)' }} />}
+            <span className="text-xs font-medium" style={{ color: alarmEnabled ? '#ff4757' : 'var(--color-text-secondary)' }}>
+              {alarmEnabled ? '警报开' : '警报关'}
+            </span>
+          </button>
         </div>
       </div>
 
