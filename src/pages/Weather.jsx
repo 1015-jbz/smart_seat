@@ -1,4 +1,5 @@
-import { CloudSun, Sun, Cloud, CloudRain, Droplets, Wind, Gauge, Eye, Thermometer } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { CloudSun, Sun, Cloud, CloudRain, Droplets, Wind, Gauge, Eye, Thermometer, MapPin, RefreshCw, Loader2 } from 'lucide-react';
 import { useVehicle } from '../context/VehicleStore';
 
 const iconMap = {
@@ -9,6 +10,64 @@ const iconMap = {
 
 export default function Weather() {
   const { weather } = useVehicle();
+  const [location, setLocation] = useState({ city: '北京', loading: false, error: null });
+
+  // 获取当前位置
+  const getLocation = () => {
+    if (!navigator.geolocation) {
+      setLocation({ ...location, error: '浏览器不支持地理定位' });
+      return;
+    }
+
+    setLocation({ ...location, loading: true, error: null });
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        console.log(`位置: ${latitude}, ${longitude}`);
+        
+        // 模拟根据坐标获取城市（实际项目可调用高德/百度地图API）
+        const cities = [
+          { lat: 39.9, lon: 116.4, name: '北京' },
+          { lat: 31.2, lon: 121.5, name: '上海' },
+          { lat: 23.1, lon: 113.3, name: '广州' },
+          { lat: 22.5, lon: 114.1, name: '深圳' },
+          { lat: 30.6, lon: 104.1, name: '成都' },
+          { lat: 34.3, lon: 108.9, name: '西安' },
+          { lat: 30.3, lon: 120.2, name: '杭州' },
+          { lat: 32.1, lon: 118.8, name: '南京' },
+          { lat: 39.1, lon: 117.2, name: '天津' },
+          { lat: 29.6, lon: 106.5, name: '重庆' },
+        ];
+        
+        // 找到最近的城市
+        let nearestCity = '北京';
+        let minDist = Infinity;
+        cities.forEach(city => {
+          const dist = Math.sqrt(Math.pow(latitude - city.lat, 2) + Math.pow(longitude - city.lon, 2));
+          if (dist < minDist) {
+            minDist = dist;
+            nearestCity = city.name;
+          }
+        });
+        
+        setLocation({ city: nearestCity, loading: false, error: null });
+      },
+      (error) => {
+        let msg = '定位失败';
+        if (error.code === 1) msg = '用户拒绝授权定位';
+        else if (error.code === 2) msg = '位置信息不可用';
+        else if (error.code === 3) msg = '定位超时';
+        setLocation({ ...location, loading: false, error: msg });
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+    );
+  };
+
+  // 页面加载时自动获取位置
+  useEffect(() => {
+    getLocation();
+  }, []);
 
   const details = [
     { icon: Droplets, label: '湿度', value: `${weather.humidity}%`, color: '#00d4ff' },
@@ -20,9 +79,23 @@ export default function Weather() {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-1 section-header" style={{ color: 'var(--color-text-main)' }}>天气信息</h1>
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>实时天气与未来预报</p>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold mb-1 section-header" style={{ color: 'var(--color-text-main)' }}>天气信息</h1>
+          <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            实时天气与未来预报 · {location.loading ? '正在定位...' : location.error ? location.error : `当前定位：${location.city}`}
+          </p>
+        </div>
+        <button onClick={getLocation} disabled={location.loading}
+          className="flex items-center gap-2 px-4 py-2 rounded-full transition-all"
+          style={{
+            background: location.loading ? 'rgba(0,212,255,0.1)' : 'rgba(0,212,255,0.05)',
+            border: '1px solid rgba(0,212,255,0.2)',
+            color: location.loading ? '#00d4ff' : 'var(--color-text-secondary)',
+          }}>
+          {location.loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          <span className="text-xs font-medium">{location.loading ? '定位中' : '重新定位'}</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-3 gap-5">
@@ -34,8 +107,9 @@ export default function Weather() {
             <div className="flex items-center gap-2 mb-4">
               <CloudSun size={20} style={{ color: '#38bdf8' }} />
               <span className="text-sm font-semibold">今日天气</span>
-              <span className="ml-auto text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,255,0.15)', color: '#00d4ff' }}>
-                {weather.city}
+              <span className="ml-auto flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,255,0.15)', color: '#00d4ff' }}>
+                <MapPin size={10} />
+                {location.city}
               </span>
             </div>
             <div className="flex items-center gap-8">
