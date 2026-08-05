@@ -58,65 +58,97 @@ export function VehicleProvider({ children }) {
     return () => clearInterval(interval);
   }, []);
 
-  // 模拟安全数据实时变化 — 高灵敏度
+  // 模拟安全数据实时变化 — 基于真实驾驶时长与摄像头检测
   useEffect(() => {
     const interval = setInterval(() => {
       const minutes = drivingDurationRef.current / 60;
+      const isDriving = vehicle.isDriving;
 
-      // 疲劳评分：驾驶越久越低，但即使刚开始也有明显波动
-      let baseFatigue;
-      if (minutes < 5) {
-        baseFatigue = 92 - minutes * 1;
-      } else if (minutes < 15) {
-        baseFatigue = 87 - (minutes - 5) * 1.2;
-      } else if (minutes < 30) {
-        baseFatigue = 75 - (minutes - 15) * 1;
-      } else if (minutes < 60) {
-        baseFatigue = 60 - (minutes - 30) * 0.6;
+      // ===== 1. 驾驶时长影响（线性递减）=====
+      let timeBasedFatigue;
+      if (!isDriving || minutes < 1) {
+        timeBasedFatigue = 95; // 刚启动或停车时状态良好
+      } else if (minutes <= 30) {
+        // 0-30分钟：轻微下降 95→85
+        timeBasedFatigue = 95 - (minutes / 30) * 10;
+      } else if (minutes <= 60) {
+        // 30-60分钟：中度下降 85→70
+        timeBasedFatigue = 85 - ((minutes - 30) / 30) * 15;
+      } else if (minutes <= 120) {
+        // 1-2小时：明显下降 70→50
+        timeBasedFatigue = 70 - ((minutes - 60) / 60) * 20;
       } else {
-        baseFatigue = Math.max(20, 42 - (minutes - 60) * 0.35);
+        // 2小时以上：严重疲劳 50→25
+        timeBasedFatigue = Math.max(25, 50 - ((minutes - 120) / 60) * 25);
       }
-      // 加大随机波动，让变化立即可见
-      const fatigueScore = Math.round(Math.max(20, Math.min(100, baseFatigue + (Math.random() * 12 - 6))));
 
-      const fatigueRatio = 1 - fatigueScore / 100;
-      // 各指标独立波动 + 疲劳基线影响，确保始终有明显变化
-      const eyeClosureRate = +(Math.min(0.85, Math.max(0.02,
-        0.05 + fatigueRatio * 0.4 + (Math.random() - 0.3) * 0.08
-      ))).toFixed(2);
-      const yawns = Math.random() < (0.15 + fatigueRatio * 0.5)
-        ? Math.floor(Math.random() * 4) + 1
-        : Math.floor(Math.random() * 2);
-      const allGazes = ['前方', '前方', '仪表盘', '左后视镜', '右后视镜', '左侧', '右侧', '前方'];
-      const gaze = allGazes[Math.floor(Math.random() * allGazes.length)];
-      const distraction = gaze !== '前方' ? Math.floor(Math.random() * 10 + 2) : Math.floor(Math.random() * 3);
-      const level = fatigueScore >= 80 ? 'normal' : fatigueScore >= 60 ? 'warning' : 'danger';
-      const heartRate = Math.round(68 + fatigueRatio * 20 + (Math.random() - 0.3) * 12);
+      // ===== 2. 摄像头面部识别指标（模拟真实检测）=====
+      // 眨眼频率（正常0.1-0.2次/秒，疲劳时增加到0.4+）
+      const blinkRate = isDriving ? 
+        Math.min(0.6, 0.12 + (1 - timeBasedFatigue / 100) * 0.35 + (Math.random() - 0.5) * 0.05) : 0.1;
+      
+      // 闭眼时长占比（正常<5%，疲劳时可达30%+）
+      const eyeClosureRatio = isDriving ?
+        Math.min(0.45, 0.03 + (1 - timeBasedFatigue / 100) * 0.32 + (Math.random() - 0.5) * 0.04) : 0.02;
+      
+      // 打哈欠次数/分钟（正常0-1次，疲劳时3-8次）
+      const yawnFreq = isDriving ?
+        Math.min(8, (1 - timeBasedFatigue / 100) * 6 + (Math.random() - 0.5) * 1) : 0;
+      
+      // 视线偏移检测（前方/仪表盘/后视镜/侧方/偏离）
+      const gazeStates = ['前方', '前方', '前方', '前方', '仪表盘', '左后视镜', '右后视镜'];
+      const fatigueGazeStates = ['前方', '仪表盘', '左侧', '右侧', '偏离', '偏离'];
+      const gazePool = timeBasedFatigue > 70 ? gazeStates : fatigueGazeStates;
+      const gazeDirection = gazePool[Math.floor(Math.random() * gazePool.length)];
+      
+      // 分心时长（秒）
+      const distractionTime = gazeDirection === '前方' ? 
+        Math.floor(Math.random() * 2) : 
+        Math.floor(Math.random() * 8 + 3);
+
+      // ===== 3. 综合疲劳评分（时长70% + 面部指标30%）=====
+      const facialFatigue = Math.round(
+        100 - (eyeClosureRatio * 100 * 0.4 + yawnFreq * 8 * 0.3 + (gazeDirection !== '前方' ? 15 : 0) * 0.3)
+      );
+      const fatigueScore = Math.round(timeBasedFatigue * 0.7 + Math.max(20, facialFatigue) * 0.3);
+
+      // ===== 4. 告警等级判断 =====
+      const alertLevel = fatigueScore >= 75 ? 'normal' : fatigueScore >= 50 ? 'warning' : 'danger';
+
+      // ===== 5. 心率（随疲劳上升）=====
+      const heartRate = Math.round(
+        72 + (1 - fatigueScore / 100) * 18 + (Math.random() - 0.5) * 8
+      );
 
       setSafety(prev => {
         const now = new Date();
         const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-        const msg = level === 'normal'
-          ? '驾驶状态良好'
-          : level === 'warning'
-            ? '检测到轻微疲劳，建议适当休息'
-            : '疲劳程度较高，请尽快休息！';
-        const newAlert = { time, type: level, message: msg };
+        
+        let message;
+        if (alertLevel === 'normal') {
+          message = `驾驶${Math.floor(minutes)}分钟，状态良好`;
+        } else if (alertLevel === 'warning') {
+          message = `已驾驶${Math.floor(minutes)}分钟，检测到疲劳迹象，建议休息`;
+        } else {
+          message = `已连续驾驶${Math.floor(minutes)}分钟，疲劳程度高，请立即休息！`;
+        }
+        
+        const newAlert = { time, type: alertLevel, message };
         return {
           ...prev,
           fatigueScore,
-          alertLevel: level,
-          eyeClosureRate,
-          yawnsPerMin: yawns,
-          gazeDirection: gaze,
-          distractionDuration: distraction,
-          heartRate: Math.max(55, Math.min(135, heartRate)),
+          alertLevel,
+          eyeClosureRate: +(eyeClosureRatio.toFixed(2)),
+          yawnsPerMin: Math.round(yawnFreq),
+          gazeDirection,
+          distractionDuration: distractionTime,
+          heartRate: Math.max(60, Math.min(120, heartRate)),
           alerts: [...prev.alerts.slice(-12), newAlert],
         };
       });
     }, 1200); // 1.2秒更新
     return () => clearInterval(interval);
-  }, []);
+  }, [vehicle.isDriving]);
 
   // 模拟天气数据缓慢变化
   useEffect(() => {
