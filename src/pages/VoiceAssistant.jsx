@@ -101,17 +101,93 @@ export default function VoiceAssistant() {
     window.speechSynthesis.speak(utter);
   }, [settings.speedOffset, settings.pitchOffset]);
 
-  // 智能回复
+  // 智能回复 - 精确识别并执行指令
   const generateReply = (text) => {
     const lower = text.toLowerCase();
-    if (lower.includes('导航') || lower.includes('目的地')) return '好的，已为您规划路线。前方2.3公里处有中国石化加油站，预计行驶时间5分钟。';
-    if (lower.includes('音乐') || lower.includes('播放')) return '正在为您播放轻音乐合集，当前曲目：River Flows in You';
-    if (lower.includes('温度') || lower.includes('空调') || lower.includes('冷') || lower.includes('热')) return '已为您调整空调温度至22度，风量调至中档。';
-    if (lower.includes('天气')) return '当前北京天气晴朗，气温28度，湿度45%，适合驾驶出行。';
-    if (lower.includes('疲劳') || lower.includes('休息')) return '您已连续驾驶一段时间，建议在前方服务区休息15分钟。';
-    if (lower.includes('车窗') || lower.includes('开窗')) return '好的，已为您打开驾驶员侧车窗。';
-    if (lower.includes('你好') || lower.includes('在吗')) return '我在，有什么可以帮您的？';
-    return '已收到您的指令，正在为您处理。';
+    
+    // ===== 导航类指令 =====
+    if (lower.includes('导航到') || lower.includes('去') || lower.includes('目的地是')) {
+      // 提取目的地
+      let dest = '未知地点';
+      const match = text.match(/(导航到|去|目的地是)\s*([\u4e00-\u9fa5a-zA-Z0-9]+)/);
+      if (match && match[2]) dest = match[2];
+      return `好的，已为您规划前往${dest}的路线。全程12.5公里，预计行驶时间25分钟，当前路况良好。`; 
+    }
+    if (lower.includes('加油站') || lower.includes('充电')) return '好的，已为您搜索附近加油站。前方2.3公里处有中国石化加油站，评分4.8星，油价7.5元/升。';
+    if (lower.includes('停车场') || lower.includes('停车')) return '已为您找到最近停车场，距离300米，剩余车位充足，收费标准每小时5元。';
+    
+    // ===== 音乐类指令 =====
+    if (lower.includes('播放') && (lower.includes('音乐') || lower.includes('歌'))) {
+      if (lower.includes('流行') || lower.includes('热门')) return '正在为您播放最新流行歌曲榜，当前曲目：七里香 - 周杰伦';
+      if (lower.includes('古典') || lower.includes('轻音乐')) return '正在为您播放古典音乐合集，当前曲目：River Flows in You - Yiruma';
+      if (lower.includes('摇滚')) return '正在为您播放摇滚经典，当前曲目：Bohemian Rhapsody - Queen';
+      return '正在为您播放推荐歌单，当前曲目：晴天 - 周杰伦';
+    }
+    if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
+    if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首：稻香 - 周杰伦';
+    if (lower.includes('音量') && (lower.includes('大') || lower.includes('高'))) return '音量已调至70%。';
+    if (lower.includes('音量') && (lower.includes('小') || lower.includes('低'))) return '音量已调至30%。';
+    
+    // ===== 空调类指令 =====
+    if (lower.includes('温度') || lower.includes('空调')) {
+      const tempMatch = text.match(/(\d+)度/);
+      if (tempMatch) {
+        const temp = tempMatch[1];
+        return `已将空调温度设置为${temp}度，风量自动调节中。`;
+      }
+      if (lower.includes('冷') || lower.includes('降温')) return '已为您将空调温度调低至20度，开启制冷模式。';
+      if (lower.includes('热') || lower.includes('升温')) return '已为您将空调温度调高至26度，开启制热模式。';
+      if (lower.includes('关闭') || lower.includes('关掉')) return '空调已关闭。';
+      return '已为您调整空调温度至22度，风量调至中档。';
+    }
+    if (lower.includes('风速') || lower.includes('风量')) {
+      if (lower.includes('大') || lower.includes('强')) return '风量已调至高档。';
+      if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
+      return '风量已调至中档。';
+    }
+    
+    // ===== 车窗类指令 =====
+    if (lower.includes('开窗') || lower.includes('打开窗')) {
+      if (lower.includes('全部') || lower.includes('所有')) return '好的，已为您打开全部车窗。';
+      if (lower.includes('主驾') || lower.includes('驾驶')) return '好的，已为您打开驾驶员侧车窗。';
+      if (lower.includes('副驾') || lower.includes('乘客')) return '好的，已为您打开副驾驶侧车窗。';
+      return '好的，已为您打开驾驶员侧车窗。';
+    }
+    if (lower.includes('关窗') || lower.includes('关闭窗')) return '好的，已为您关闭全部车窗。';
+    
+    // ===== 天气查询 =====
+    if (lower.includes('天气')) {
+      if (lower.includes('明天')) return '明天北京天气多云转晴，气温22-28度，风力2级，适合出行。';
+      if (lower.includes('后天')) return '后天北京天气晴朗，气温20-26度，空气质量优。';
+      return '当前北京天气晴朗，气温28度，湿度45%，PM2.5指数35，空气质量良好，适合驾驶出行。';
+    }
+    
+    // ===== 疲劳提醒 =====
+    if (lower.includes('疲劳') || lower.includes('累') || lower.includes('困')) {
+      return '检测到您已连续驾驶1小时，建议在前方3公里处的服务区休息15分钟。已为您搜索附近咖啡厅和便利店。';
+    }
+    
+    // ===== 电话类指令 =====
+    if (lower.includes('打电话') || lower.includes('拨打')) {
+      const nameMatch = text.match(/(打电话|拨打)\s*([\u4e00-\u9fa5a-zA-Z]+)/);
+      if (nameMatch && nameMatch[2]) return `正在为您拨打${nameMatch[2]}的电话...`;
+      return '请问您要拨打谁的电话？';
+    }
+    if (lower.includes('接听')) return '已为您接通来电。';
+    if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
+    
+    // ===== 日程提醒 =====
+    if (lower.includes('日程') || lower.includes('安排') || lower.includes('会议')) {
+      return '您今天下午3点有一个重要会议，地点在公司A栋3楼会议室。距离会议还有2小时，建议提前出发。';
+    }
+    
+    // ===== 问候与闲聊 =====
+    if (lower.includes('你好') || lower.includes('嗨') || lower.includes('在吗')) return '我在，有什么可以帮您的？';
+    if (lower.includes('谢谢') || lower.includes('感谢')) return '不客气，随时为您服务！';
+    if (lower.includes('再见') || lower.includes('拜拜')) return '祝您一路平安，再见！';
+    
+    // ===== 默认回复 =====
+    return '已收到您的指令，正在为您处理。如需帮助，可以说"导航到XXX"、"播放音乐"、"调整温度"等。';
   };
 
   // 添加消息并语音回复
@@ -463,7 +539,7 @@ export default function VoiceAssistant() {
 
           {/* 快捷指令按钮 */}
           <div className="mt-3 flex flex-wrap gap-2">
-            {['小龙', '导航到加油站', '播放音乐', '空调温度调低', '今天天气', '我有点疲劳'].map(cmd => (
+            {['小龙', '导航到北京站', '播放流行音乐', '温度调到24度', '打开全部车窗', '明天天气', '打电话给张三'].map(cmd => (
               <button key={cmd} onClick={() => { setInputText(cmd); setTimeout(() => { const now = new Date(); const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`; if (cmd === '小龙') { setWakeDetected(true); setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time }]); speak('我在，请说您的需求。'); setTimeout(() => setWakeDetected(false), 2000); } else { setMessages(prev => [...prev, { role: 'user', text: cmd, time }]); setTimeout(() => addAssistantReply(cmd), 500); } setInputText(''); }, 100); }}
                 className="px-3 py-1.5 rounded-full text-xs transition-all hover:scale-105"
                 style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)', color: 'var(--color-text-secondary)' }}>
