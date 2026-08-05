@@ -3,11 +3,71 @@ import { vehicleData as initVehicle, safetyData as initSafety, weatherData as in
 
 const VehicleContext = createContext();
 
+// 城市坐标库（用于根据经纬度匹配城市）
+const CITY_COORDS = [
+  { lat: 39.9, lon: 116.4, name: '北京' },
+  { lat: 31.2, lon: 121.5, name: '上海' },
+  { lat: 23.1, lon: 113.3, name: '广州' },
+  { lat: 22.5, lon: 114.1, name: '深圳' },
+  { lat: 30.6, lon: 104.1, name: '成都' },
+  { lat: 34.3, lon: 108.9, name: '西安' },
+  { lat: 30.3, lon: 120.2, name: '杭州' },
+  { lat: 32.1, lon: 118.8, name: '南京' },
+  { lat: 39.1, lon: 117.2, name: '天津' },
+  { lat: 29.6, lon: 106.5, name: '重庆' },
+];
+
+// 根据经纬度匹配最近城市
+function findNearestCity(latitude, longitude) {
+  let nearestCity = '北京';
+  let minDist = Infinity;
+  CITY_COORDS.forEach(city => {
+    const dist = Math.sqrt(Math.pow(latitude - city.lat, 2) + Math.pow(longitude - city.lon, 2));
+    if (dist < minDist) {
+      minDist = dist;
+      nearestCity = city.name;
+    }
+  });
+  return nearestCity;
+}
+
 export function VehicleProvider({ children }) {
   const [vehicle, setVehicle] = useState({ ...initVehicle });
   const [safety, setSafety] = useState({ ...initSafety, alerts: [...initSafety.alerts] });
   const [weather, setWeather] = useState({ ...initWeather, forecast: [...initWeather.forecast] });
   const drivingDurationRef = useRef(0); // 累计驾驶秒数
+
+  // 车辆当前位置（全局共享，天气与导航共用）
+  const [location, setLocation] = useState({ city: '北京', latitude: null, longitude: null, loading: false, error: null });
+
+  // 获取车辆当前位置
+  const refreshLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setLocation(prev => ({ ...prev, error: '浏览器不支持地理定位' }));
+      return;
+    }
+    setLocation(prev => ({ ...prev, loading: true, error: null }));
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        const city = findNearestCity(latitude, longitude);
+        setLocation({ city, latitude, longitude, loading: false, error: null });
+      },
+      (error) => {
+        let msg = '定位失败';
+        if (error.code === 1) msg = '用户拒绝授权定位';
+        else if (error.code === 2) msg = '位置信息不可用';
+        else if (error.code === 3) msg = '定位超时';
+        setLocation(prev => ({ ...prev, loading: false, error: msg }));
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+    );
+  }, []);
+
+  // 应用启动时自动获取一次位置
+  useEffect(() => {
+    refreshLocation();
+  }, [refreshLocation]);
 
   // 驾驶时长计时器
   useEffect(() => {
@@ -187,7 +247,7 @@ export function VehicleProvider({ children }) {
   const getDrivingDuration = useCallback(() => drivingDurationRef.current, []);
 
   return (
-    <VehicleContext.Provider value={{ vehicle, safety, weather, toggleDriving, setDriving, getDrivingDuration }}>
+    <VehicleContext.Provider value={{ vehicle, safety, weather, location, toggleDriving, setDriving, getDrivingDuration, refreshLocation }}>
       {children}
     </VehicleContext.Provider>
   );

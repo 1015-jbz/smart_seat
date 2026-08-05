@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Bell } from 'lucide-react';
 import { voiceMessages, voiceSettings } from '../data/mockData';
+import { useVehicle } from '../context/VehicleStore';
 
 const WAKE_WORD = '小龙';
 
@@ -43,6 +44,7 @@ function AudioVisualizer({ analyser, isActive }) {
 
 export default function VoiceAssistant() {
   const { username } = useOutletContext();
+  const { location } = useVehicle();
   const [messages, setMessages] = useState(voiceMessages);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -63,6 +65,8 @@ export default function VoiceAssistant() {
   const wakeRecognitionRef = useRef(null);
   const levelTimerRef = useRef(null);
   const recTimerRef = useRef(null);
+  const startWakeListeningRef = useRef(null); // 避免循环依赖
+  const processedRef = useRef(false); // 防止重复处理同一句语音
 
   // 检测语音识别支持
   useEffect(() => {
@@ -102,19 +106,20 @@ export default function VoiceAssistant() {
   }, [settings.speedOffset, settings.pitchOffset]);
 
   // 智能回复 - 精确识别并执行指令
-  const generateReply = (text) => {
+  const generateReply = useCallback((text) => {
     const lower = text.toLowerCase();
+    const currentCity = location.city || '当前位置';
     
-    // ===== 导航类指令 =====
+    // ===== 导航类指令（基于车辆当前位置）=====
     if (lower.includes('导航到') || lower.includes('去') || lower.includes('目的地是')) {
       // 提取目的地
       let dest = '未知地点';
       const match = text.match(/(导航到|去|目的地是)\s*([\u4e00-\u9fa5a-zA-Z0-9]+)/);
       if (match && match[2]) dest = match[2];
-      return `好的，已为您规划前往${dest}的路线。全程12.5公里，预计行驶时间25分钟，当前路况良好。`; 
+      return `好的，已定位您当前位置为${currentCity}。正在为您规划从${currentCity}前往${dest}的路线，全程12.5公里，预计行驶25分钟，当前路况良好。`; 
     }
-    if (lower.includes('加油站') || lower.includes('充电')) return '好的，已为您搜索附近加油站。前方2.3公里处有中国石化加油站，评分4.8星，油价7.5元/升。';
-    if (lower.includes('停车场') || lower.includes('停车')) return '已为您找到最近停车场，距离300米，剩余车位充足，收费标准每小时5元。';
+    if (lower.includes('加油站') || lower.includes('充电')) return `已根据您在${currentCity}的位置搜索附近加油站。前方2.3公里处有中国石化加油站，评分4.8星，油价7.5元/升。`;
+    if (lower.includes('停车场') || lower.includes('停车')) return `已根据您在${currentCity}的位置找到最近停车场，距离300米，剩余车位充足，收费标准每小时5元。`;
     
     // ===== 音乐类指令 =====
     if (lower.includes('播放') && (lower.includes('音乐') || lower.includes('歌'))) {
@@ -188,7 +193,7 @@ export default function VoiceAssistant() {
     
     // ===== 默认回复 =====
     return '已收到您的指令，正在为您处理。如需帮助，可以说"导航到XXX"、"播放音乐"、"调整温度"等。';
-  };
+  }, [location.city]);
 
   // 添加消息并语音回复
   const addAssistantReply = useCallback((userText) => {
@@ -197,7 +202,7 @@ export default function VoiceAssistant() {
     const reply = generateReply(userText);
     setMessages(prev => [...prev, { role: 'assistant', text: reply, time }]);
     speak(reply);
-  }, [speak]);
+  }, [speak, generateReply]);
 
   const handleSend = () => {
     if (!inputText.trim()) return;
@@ -224,10 +229,48 @@ export default function VoiceAssistant() {
 
   const handleClear = () => setMessages([]);
 
-  // 启动麦克风 + 语音识别（用户手动点击）
+  // 停止麦克风硬件（仅释放资源，不发送消息）
+  const stopMicHardware = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    if (audioCtxRef.current) { audioCtxRef.current.close(); audioCtxRef.current = null; }
+    analyserRef.current = null;
+    if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch(e) {} recognitionRef.current = null; }
+    if (levelTimerRef.current) { clearInterval(levelTimerRef.current); levelTimerRef.current = null; }
+    if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; }
+    setIsRecording(false);
+    setAudioLevel(0);
+    setRecordingTime(0);
+  }, []);
+
+  // 处理识别到的请求：关闭麦克风 → 执行请求 → 重新进入唤醒模式
+  const processVoiceCommand = useCallback((text) => {
+    const now = new Date();
+    const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+    if (!text) {
+      // 无有效内容，直接重新进入唤醒模式
+      setTimeout(() => startWakeListeningRef.current?.(), 600);
+      return;
+    }
+    // 显示用户请求
+    setMessages(prev => [...prev, { role: 'user', text, time }]);
+    setInputText('');
+    setInterimText('');
+    // 执行请求并语音回复
+    setTimeout(() => {
+      addAssistantReply(text);
+      // 执行完毕后自动重新进入语音唤醒模式
+      setTimeout(() => startWakeListeningRef.current?.(), 2500);
+    }, 400);
+  }, [addAssistantReply]);
+
+  // 启动麦克风 + 语音识别（识别到完整请求后自动关闭并执行）
   const startRecording = useCallback(async () => {
     try {
       setMicError(null);
+      processedRef.current = false;
       // 如果唤醒监听中，先停止
       if (wakeRecognitionRef.current) {
         try { wakeRecognitionRef.current.abort(); } catch(e) {}
@@ -277,9 +320,11 @@ export default function VoiceAssistant() {
             else interim += t;
           }
           setInterimText(interim);
-          if (final) {
-            setInputText(prev => prev + final);
-            setInterimText('');
+          // 识别到完整请求：自动关闭麦克风并执行，随后重新进入唤醒模式
+          if (final && !processedRef.current) {
+            processedRef.current = true;
+            stopMicHardware();
+            processVoiceCommand(final.trim());
           }
         };
         recognition.onerror = (e) => {
@@ -287,8 +332,8 @@ export default function VoiceAssistant() {
           if (e.error === 'not-allowed') setMicError('麦克风权限被拒绝');
         };
         recognition.onend = () => {
-          // 如果还在录音中，自动重启识别
-          if (streamRef.current && recognitionRef.current === recognition) {
+          // 如果还在录音中且未处理，自动重启识别
+          if (streamRef.current && recognitionRef.current === recognition && !processedRef.current) {
             try { recognition.start(); } catch(e) {}
           }
         };
@@ -305,38 +350,17 @@ export default function VoiceAssistant() {
       else if (err.name === 'NotReadableError') msg = '麦克风被其他程序占用';
       setMicError(msg);
     }
-  }, []);
+  }, [stopMicHardware, processVoiceCommand]);
 
-  // 停止录音
+  // 手动停止录音（取消本次识别，重新进入唤醒模式）
   const stopRecording = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-    }
-    if (audioCtxRef.current) { audioCtxRef.current.close(); audioCtxRef.current = null; }
-    analyserRef.current = null;
-    if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch(e) {} recognitionRef.current = null; }
-    if (levelTimerRef.current) { clearInterval(levelTimerRef.current); levelTimerRef.current = null; }
-    if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; }
-
-    // 发送已识别的文字
-    const textToSend = (inputText + interimText).trim();
-    if (textToSend) {
-      const now = new Date();
-      const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-      setMessages(prev => [...prev, { role: 'user', text: textToSend, time }]);
-      setInputText('');
-      setInterimText('');
-      setTimeout(() => addAssistantReply(textToSend), 500);
-    }
-
-    setIsRecording(false);
-    setAudioLevel(0);
-    setRecordingTime(0);
-
-    // 重新启动唤醒词监听
-    setTimeout(() => startWakeListening(), 500);
-  }, [inputText, interimText, addAssistantReply]);
+    processedRef.current = true; // 阻止自动处理
+    stopMicHardware();
+    setInputText('');
+    setInterimText('');
+    // 重新进入语音唤醒模式
+    setTimeout(() => startWakeListeningRef.current?.(), 500);
+  }, [stopMicHardware]);
 
   // ===== 唤醒词监听 =====
   const startWakeListening = useCallback(() => {
@@ -392,6 +416,11 @@ export default function VoiceAssistant() {
       console.warn('启动唤醒监听失败:', e);
     }
   }, [isRecording, startRecording, speak]);
+
+  // 同步唤醒监听函数到 ref（供自动重新唤醒调用，避免循环依赖）
+  useEffect(() => {
+    startWakeListeningRef.current = startWakeListening;
+  }, [startWakeListening]);
 
   // 手动开启唤醒词监听（需要用户交互后才能请求麦克风权限）
   const enableWakeWord = useCallback(() => {
@@ -514,7 +543,7 @@ export default function VoiceAssistant() {
                 background: isRecording ? 'rgba(255,71,87,0.2)' : 'rgba(255,255,255,0.05)',
                 border: `1px solid ${isRecording ? '#ff4757' : 'var(--color-border-glow)'}`,
               }}
-              title={isRecording ? '停止录音并发送' : '开始录音'}>
+              title={isRecording ? '取消录音' : '开始录音'}>
               {isRecording ? <MicOff size={18} style={{ color: '#ff4757' }} /> : <Mic size={18} style={{ color: 'var(--color-text-secondary)' }} />}
             </button>
             <div className="flex-1 relative">
