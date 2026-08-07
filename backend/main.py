@@ -12,9 +12,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import CORS_ORIGINS, API_V1_PREFIX
+from config import CORS_ORIGINS, CORS_ORIGIN_REGEX, API_V1_PREFIX
 from database import init_db
-from routers import vehicle, safety, weather, location, emotion, driving
+from routers import vehicle, safety, weather, location, emotion, driving, chat
 
 
 @asynccontextmanager
@@ -42,6 +42,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,6 +63,7 @@ app.include_router(weather.router, prefix=API_V1_PREFIX)
 app.include_router(location.router, prefix=API_V1_PREFIX)
 app.include_router(emotion.router, prefix=API_V1_PREFIX)
 app.include_router(driving.router, prefix=API_V1_PREFIX)
+app.include_router(chat.router, prefix=API_V1_PREFIX)
 
 # 注意：WebSocket 路由已在 vehicle.router 中定义，前缀 /vehicle
 # 挂载到 /api/v1 后实际路径为 /api/v1/vehicle/ws/vehicle。

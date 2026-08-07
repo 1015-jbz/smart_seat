@@ -269,6 +269,20 @@ export const api = {
     if (!data || data.error) return null;
     return data;
   },
+
+  /**
+   * AI 对话 POST /chat
+   * @returns {{reply: string, source: 'deepseek'|'fallback'}|null}
+   */
+  chat: async (message, context = {}) => {
+    const res = await apiFetch('/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, context }),
+      timeout: 15000,
+    });
+    if (!res || res.error) return null;
+    return res;
+  },
 };
 
 // ============ WebSocket 客户端工厂 ============

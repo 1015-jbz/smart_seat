@@ -386,12 +386,26 @@ def _run_safety_check(landmarks, w, h):
     else:
         _distraction_start = None; distraction_dur = 0.0
 
-    # 疲劳评分：PERCLOS 为主，哈欠/低头/分心为辅（阈值调高，减少误报）
+    # 疲劳评分：PERCLOS 为主，哈欠/低头/分心为辅
     fatigue_score = 0.0
-    if perclos > 0.4: fatigue_score += min(40, perclos * 100)
-    if yawn_count >= 4: fatigue_score += 20
-    if gaze == "down" and perclos > 0.25: fatigue_score += 10
-    if distraction_dur > 5.0: fatigue_score += min(15, distraction_dur * 2)
+
+    # PERCLOS 梯度计分（15% 起评，避免正常眨眼完全0分）
+    if perclos > 0.15:
+        fatigue_score += min(45, perclos * 100)  # 20%→20, 30%→30, 45%+→45
+    else:
+        fatigue_score += perclos * 60  # 10%→6, 15%→9
+
+    # 哈欠: 2次/分钟起评
+    if yawn_count >= 2:
+        fatigue_score += min(20, yawn_count * 5)  # 2→10, 4→20
+
+    # 低头 + 眼睑下垂
+    if gaze == "down" and perclos > 0.2:
+        fatigue_score += 10
+
+    # 分心 > 3s
+    if distraction_dur > 3.0:
+        fatigue_score += min(15, (distraction_dur - 3) * 5)
 
     if fatigue_score >= 70: alert_level = "critical"
     elif fatigue_score >= 45: alert_level = "high"

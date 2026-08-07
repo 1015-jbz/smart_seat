@@ -66,7 +66,7 @@ export default function DrivingSafety() {
         const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
         const hour = now.getHours();
         let greet = hour < 6 ? '凌晨好' : hour < 12 ? '上午好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
-        const greeting = `${greet}！今天是${dateStr}。当前天气晴朗，气温28度。欢迎您驾驶，小龙随时为您服务。`;
+        const greeting = `${greet}！今天是${dateStr}。当前天气晴朗，气温28度。欢迎您驾驶，祝您一路平安。`;
         if (window.speechSynthesis) {
           const utter = new SpeechSynthesisUtterance(greeting);
           utter.lang = 'zh-CN';
@@ -303,9 +303,9 @@ export default function DrivingSafety() {
 
   // 疲劳等级描述
   const getFatigueDesc = (score) => {
-    if (score >= 80) return { text: '状态良好', color: '#00ff88' };
-    if (score >= 60) return { text: '轻度疲劳', color: '#ffa502' };
-    if (score >= 40) return { text: '中度疲劳', color: '#ff6348' };
+    if (score < 25) return { text: '状态良好', color: '#00ff88' };
+    if (score < 45) return { text: '轻度疲劳', color: '#ffa502' };
+    if (score < 70) return { text: '中度疲劳', color: '#ff6348' };
     return { text: '严重疲劳', color: '#ff4757' };
   };
 
@@ -502,7 +502,7 @@ export default function DrivingSafety() {
                 <h3 className="text-sm font-semibold">疲劳评分</h3>
               </div>
               <div className="relative">
-                <GaugeChart value={realSafety.fatigueScore} max={100} size={150} color="#a78bfa" warning={60} danger={40} />
+                <GaugeChart value={realSafety.fatigueScore} max={100} size={150} color="#a78bfa" warning={25} danger={45} />
               </div>
               <div className="mt-2 text-center">
                 <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ color: fatigueDesc.color, background: `${fatigueDesc.color}15` }}>

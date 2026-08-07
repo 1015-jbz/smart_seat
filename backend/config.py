@@ -4,6 +4,9 @@
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()  # 加载 backend/.env 中的环境变量
 
 # 项目根目录（backend/）
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,13 +19,18 @@ DB_PATH = DATA_DIR / "smart_cabin.db"
 # SQLite 连接字符串
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 
-# CORS 允许的前端来源
+# CORS 允许的前端来源（开发阶段用正则匹配所有本地端口）
 CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5175",
 ]
+CORS_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 
 # 第三方 API 请求超时（秒）
 API_TIMEOUT = 10.0
@@ -48,3 +56,8 @@ API_V1_PREFIX = "/api/v1"
 # 默认服务器主机/端口
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
+
+# DeepSeek AI 对话 API
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"

@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Bell } from 'lucide-react';
+import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Bell, Loader2 } from 'lucide-react';
 import { voiceMessages, voiceSettings } from '../data/mockData';
 import { useVehicle } from '../context/VehicleStore';
+import { api } from '../services/api';
 
 const WAKE_WORD = '小龙';
 
@@ -63,9 +64,9 @@ export default function VoiceAssistant() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [recordingTime, setRecordingTime] = useState(0);
   const [speechSupported, setSpeechSupported] = useState(false);
-  const [wakeListening, setWakeListening] = useState(false); // 唤醒词监听中
-  const [wakeDetected, setWakeDetected] = useState(false); // 刚检测到唤醒词
-  const [interimText, setInterimText] = useState(''); // 实时识别中间结果
+  const [wakeListening, setWakeListening] = useState(false);
+  const [wakeDetected, setWakeDetected] = useState(false);
+  const [interimText, setInterimText] = useState('');
   const chatEndRef = useRef(null);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -74,8 +75,8 @@ export default function VoiceAssistant() {
   const wakeRecognitionRef = useRef(null);
   const levelTimerRef = useRef(null);
   const recTimerRef = useRef(null);
-  const startWakeListeningRef = useRef(null); // 避免循环依赖
-  const processedRef = useRef(false); // 防止重复处理同一句语音
+  const startWakeListeningRef = useRef(null);
+  const processedRef = useRef(false);
 
   // 检测语音识别支持
   useEffect(() => {
@@ -99,119 +100,85 @@ export default function VoiceAssistant() {
     };
   }, []);
 
-  // TTS 语音回复
+  // TTS 语音回复 — 返回 Promise，播完 resolve（防止麦克风回收 TTS 音频）
   const speak = useCallback((text) => {
-    if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'zh-CN';
-    utter.rate = 1 + settings.speedOffset * 0.1;
-    utter.pitch = 1 + settings.pitchOffset * 0.1;
-    // 尝试选择中文语音
-    const voices = window.speechSynthesis.getVoices();
-    const zhVoice = voices.find(v => v.lang.includes('zh'));
-    if (zhVoice) utter.voice = zhVoice;
-    window.speechSynthesis.speak(utter);
+    return new Promise((resolve) => {
+      if (!window.speechSynthesis) { resolve(); return; }
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'zh-CN';
+      utter.rate = 1 + settings.speedOffset * 0.1;
+      utter.pitch = 1 + settings.pitchOffset * 0.1;
+      const voices = window.speechSynthesis.getVoices();
+      const zhVoice = voices.find(v => v.lang.includes('zh'));
+      if (zhVoice) utter.voice = zhVoice;
+      utter.onend = () => resolve();
+      utter.onerror = () => resolve();
+      window.speechSynthesis.speak(utter);
+    });
   }, [settings.speedOffset, settings.pitchOffset]);
 
-  // 智能回复 - 精确识别并执行指令
-  const generateReply = useCallback((text) => {
+  // 本地规则引擎 — 确定性车控指令（瞬时响应，不耗 token）
+  const localCommand = useCallback((text) => {
     const lower = text.toLowerCase();
-    const currentCity = location.city || '当前位置';
-    
-    // ===== 导航类指令（基于车辆当前位置）=====
-    if (lower.includes('导航到') || lower.includes('去') || lower.includes('目的地是')) {
-      // 提取目的地
-      let dest = '未知地点';
-      const match = text.match(/(导航到|去|目的地是)\s*([\u4e00-\u9fa5a-zA-Z0-9]+)/);
-      if (match && match[2]) dest = match[2];
-      return `好的，已定位您当前位置为${currentCity}。正在为您规划从${currentCity}前往${dest}的路线，全程12.5公里，预计行驶25分钟，当前路况良好。`; 
+    // 车窗
+    if (lower.includes('开窗') || lower.includes('打开窗')) {
+      if (lower.includes('全部') || lower.includes('所有')) return '好的，已为您打开全部车窗。';
+      if (lower.includes('主驾') || lower.includes('驾驶')) return '好的，已为您打开驾驶员侧车窗。';
+      return '好的，已为您打开驾驶员侧车窗。';
     }
-    if (lower.includes('加油站') || lower.includes('充电')) return `已根据您在${currentCity}的位置搜索附近加油站。前方2.3公里处有中国石化加油站，评分4.8星，油价7.5元/升。`;
-    if (lower.includes('停车场') || lower.includes('停车')) return `已根据您在${currentCity}的位置找到最近停车场，距离300米，剩余车位充足，收费标准每小时5元。`;
-    
-    // ===== 音乐类指令 =====
-    if (lower.includes('播放') && (lower.includes('音乐') || lower.includes('歌'))) {
-      if (lower.includes('流行') || lower.includes('热门')) return '正在为您播放最新流行歌曲榜，当前曲目：七里香 - 周杰伦';
-      if (lower.includes('古典') || lower.includes('轻音乐')) return '正在为您播放古典音乐合集，当前曲目：River Flows in You - Yiruma';
-      if (lower.includes('摇滚')) return '正在为您播放摇滚经典，当前曲目：Bohemian Rhapsody - Queen';
-      return '正在为您播放推荐歌单，当前曲目：晴天 - 周杰伦';
-    }
-    if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
-    if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首：稻香 - 周杰伦';
-    if (lower.includes('音量') && (lower.includes('大') || lower.includes('高'))) return '音量已调至70%。';
-    if (lower.includes('音量') && (lower.includes('小') || lower.includes('低'))) return '音量已调至30%。';
-    
-    // ===== 空调类指令 =====
+    if (lower.includes('关窗') || lower.includes('关闭窗')) return '好的，已为您关闭全部车窗。';
+    // 空调
     if (lower.includes('温度') || lower.includes('空调')) {
       const tempMatch = text.match(/(\d+)度/);
-      if (tempMatch) {
-        const temp = tempMatch[1];
-        return `已将空调温度设置为${temp}度，风量自动调节中。`;
-      }
-      if (lower.includes('冷') || lower.includes('降温')) return '已为您将空调温度调低至20度，开启制冷模式。';
-      if (lower.includes('热') || lower.includes('升温')) return '已为您将空调温度调高至26度，开启制热模式。';
+      if (tempMatch) return `已将空调温度设置为${tempMatch[1]}度。`;
+      if (lower.includes('冷') || lower.includes('降温')) return '已调低空调温度，开启制冷模式。';
+      if (lower.includes('热') || lower.includes('升温')) return '已调高空调温度，开启制热模式。';
       if (lower.includes('关闭') || lower.includes('关掉')) return '空调已关闭。';
-      return '已为您调整空调温度至22度，风量调至中档。';
+      return '已为您调整空调温度至22度。';
     }
     if (lower.includes('风速') || lower.includes('风量')) {
       if (lower.includes('大') || lower.includes('强')) return '风量已调至高档。';
       if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
       return '风量已调至中档。';
     }
-    
-    // ===== 车窗类指令 =====
-    if (lower.includes('开窗') || lower.includes('打开窗')) {
-      if (lower.includes('全部') || lower.includes('所有')) return '好的，已为您打开全部车窗。';
-      if (lower.includes('主驾') || lower.includes('驾驶')) return '好的，已为您打开驾驶员侧车窗。';
-      if (lower.includes('副驾') || lower.includes('乘客')) return '好的，已为您打开副驾驶侧车窗。';
-      return '好的，已为您打开驾驶员侧车窗。';
-    }
-    if (lower.includes('关窗') || lower.includes('关闭窗')) return '好的，已为您关闭全部车窗。';
-    
-    // ===== 天气查询 =====
-    if (lower.includes('天气')) {
-      if (lower.includes('明天')) return '明天北京天气多云转晴，气温22-28度，风力2级，适合出行。';
-      if (lower.includes('后天')) return '后天北京天气晴朗，气温20-26度，空气质量优。';
-      return '当前北京天气晴朗，气温28度，湿度45%，PM2.5指数35，空气质量良好，适合驾驶出行。';
-    }
-    
-    // ===== 疲劳提醒 =====
-    if (lower.includes('疲劳') || lower.includes('累') || lower.includes('困')) {
-      return '检测到您已连续驾驶1小时，建议在前方3公里处的服务区休息15分钟。已为您搜索附近咖啡厅和便利店。';
-    }
-    
-    // ===== 电话类指令 =====
-    if (lower.includes('打电话') || lower.includes('拨打')) {
-      const nameMatch = text.match(/(打电话|拨打)\s*([\u4e00-\u9fa5a-zA-Z]+)/);
-      if (nameMatch && nameMatch[2]) return `正在为您拨打${nameMatch[2]}的电话...`;
-      return '请问您要拨打谁的电话？';
-    }
+    // 音乐
+    if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
+    if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首。';
+    if (lower.includes('音量') && lower.includes('大')) return '音量已调高。';
+    if (lower.includes('音量') && lower.includes('小')) return '音量已调低。';
+    // 电话
     if (lower.includes('接听')) return '已为您接通来电。';
     if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
-    
-    // ===== 日程提醒 =====
-    if (lower.includes('日程') || lower.includes('安排') || lower.includes('会议')) {
-      return '您今天下午3点有一个重要会议，地点在公司A栋3楼会议室。距离会议还有2小时，建议提前出发。';
-    }
-    
-    // ===== 问候与闲聊 =====
-    if (lower.includes('你好') || lower.includes('嗨') || lower.includes('在吗')) return '我在，有什么可以帮您的？';
-    if (lower.includes('谢谢') || lower.includes('感谢')) return '不客气，随时为您服务！';
-    if (lower.includes('再见') || lower.includes('拜拜')) return '祝您一路平安，再见！';
-    
-    // ===== 默认回复 =====
-    return '已收到您的指令，正在为您处理。如需帮助，可以说"导航到XXX"、"播放音乐"、"调整温度"等。';
-  }, [location.city]);
+    return null;
+  }, []);
 
-  // 添加消息并语音回复
-  const addAssistantReply = useCallback((userText) => {
-    const reply = generateReply(userText);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  // 智能回复 — 本地指令优先，其余走 DeepSeek
+  const generateReply = useCallback(async (text) => {
+    const local = localCommand(text);
+    if (local) return { reply: local, source: 'local' };
+
+    setAiLoading(true);
+    try {
+      const ctx = { city: location.city };
+      const res = await api.chat(text, ctx);
+      if (res && res.reply) return { reply: res.reply, source: res.source };
+    } catch (_) {}
+    finally { setAiLoading(false); }
+
+    return { reply: '抱歉，AI 服务暂时不可用，请稍后再试。', source: 'fallback' };
+  }, [location.city, localCommand]);
+
+  // 添加消息并语音回复 — 等 TTS 播完再 resolve
+  const addAssistantReply = useCallback(async (userText) => {
+    const { reply } = await generateReply(userText);
     setMessages(prev => [...prev, { role: 'assistant', text: reply, time: nowHHMM() }]);
-    speak(reply);
+    await speak(reply);
   }, [speak, generateReply]);
 
-  // 触发唤醒词响应（文字或语音命中唤醒词时共用）
+  // 触发唤醒词响应
   const triggerWake = useCallback(() => {
     setWakeDetected(true);
     setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time: nowHHMM() }]);
@@ -225,7 +192,6 @@ export default function VoiceAssistant() {
     setInputText('');
     setInterimText('');
 
-    // 文字唤醒：输入"小龙"触发唤醒流程
     if (text === '小龙' || text.toLowerCase() === 'xiaolong') {
       triggerWake();
       return;
@@ -235,21 +201,18 @@ export default function VoiceAssistant() {
     setTimeout(() => addAssistantReply(text), 500);
   };
 
-  // 快捷指令：点击即发送，复用 handleSend 的分支逻辑
+  // 快捷指令
   const handleQuickCommand = (cmd) => {
     setInputText('');
     setInterimText('');
-    if (cmd === '小龙') {
-      triggerWake();
-      return;
-    }
+    if (cmd === '小龙') { triggerWake(); return; }
     setMessages(prev => [...prev, { role: 'user', text: cmd, time: nowHHMM() }]);
     setTimeout(() => addAssistantReply(cmd), 500);
   };
 
   const handleClear = () => setMessages([]);
 
-  // 停止麦克风硬件（仅释放资源，不发送消息）
+  // 停止麦克风硬件
   const stopMicHardware = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
@@ -265,31 +228,27 @@ export default function VoiceAssistant() {
     setRecordingTime(0);
   }, []);
 
-  // 处理识别到的请求：关闭麦克风 → 执行请求 → 重新进入唤醒模式
+  // 处理识别到的请求 — 等 TTS 播完再恢复唤醒监听（防止回收）
   const processVoiceCommand = useCallback((text) => {
     if (!text) {
-      // 无有效内容，直接重新进入唤醒模式
       setTimeout(() => startWakeListeningRef.current?.(), 600);
       return;
     }
-    // 显示用户请求
     setMessages(prev => [...prev, { role: 'user', text, time: nowHHMM() }]);
     setInputText('');
     setInterimText('');
-    // 执行请求并语音回复
-    setTimeout(() => {
-      addAssistantReply(text);
-      // 执行完毕后自动重新进入语音唤醒模式
-      setTimeout(() => startWakeListeningRef.current?.(), 2500);
+    setTimeout(async () => {
+      await addAssistantReply(text);
+      // TTS 播完后稍等再恢复唤醒
+      setTimeout(() => startWakeListeningRef.current?.(), 800);
     }, 400);
   }, [addAssistantReply]);
 
-  // 启动麦克风 + 语音识别（识别到完整请求后自动关闭并执行）
+  // 启动麦克风 + 语音识别
   const startRecording = useCallback(async () => {
     try {
       setMicError(null);
       processedRef.current = false;
-      // 如果唤醒监听中，先停止
       if (wakeRecognitionRef.current) {
         try { wakeRecognitionRef.current.abort(); } catch(e) {}
         wakeRecognitionRef.current = null;
@@ -309,7 +268,6 @@ export default function VoiceAssistant() {
       source.connect(analyser);
       analyserRef.current = analyser;
 
-      // 音量检测
       const dataArr = new Uint8Array(analyser.frequencyBinCount);
       levelTimerRef.current = setInterval(() => {
         analyser.getByteTimeDomainData(dataArr);
@@ -321,7 +279,6 @@ export default function VoiceAssistant() {
       setRecordingTime(0);
       recTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
 
-      // 语音识别
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
         const recognition = new SR();
@@ -338,7 +295,6 @@ export default function VoiceAssistant() {
             else interim += t;
           }
           setInterimText(interim);
-          // 识别到完整请求：自动关闭麦克风并执行，随后重新进入唤醒模式
           if (final && !processedRef.current) {
             processedRef.current = true;
             stopMicHardware();
@@ -350,7 +306,6 @@ export default function VoiceAssistant() {
           if (e.error === 'not-allowed') setMicError('麦克风权限被拒绝');
         };
         recognition.onend = () => {
-          // 如果还在录音中且未处理，自动重启识别
           if (streamRef.current && recognitionRef.current === recognition && !processedRef.current) {
             try { recognition.start(); } catch(e) {}
           }
@@ -370,13 +325,12 @@ export default function VoiceAssistant() {
     }
   }, [stopMicHardware, processVoiceCommand]);
 
-  // 手动停止录音（取消本次识别，重新进入唤醒模式）
+  // 手动停止录音
   const stopRecording = useCallback(() => {
-    processedRef.current = true; // 阻止自动处理
+    processedRef.current = true;
     stopMicHardware();
     setInputText('');
     setInterimText('');
-    // 重新进入语音唤醒模式
     setTimeout(() => startWakeListeningRef.current?.(), 500);
   }, [stopMicHardware]);
 
@@ -384,7 +338,6 @@ export default function VoiceAssistant() {
   const startWakeListening = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
-    // 如果已在监听或正在录音，不启动
     if (wakeRecognitionRef.current || isRecording) return;
 
     try {
@@ -398,16 +351,14 @@ export default function VoiceAssistant() {
           const text = event.results[i][0].transcript.toLowerCase();
           if (text.includes(WAKE_WORD.toLowerCase())) {
             setWakeDetected(true);
-            // 停止唤醒监听
             try { wakeRec.abort(); } catch(e) {}
             wakeRecognitionRef.current = null;
             setWakeListening(false);
-            // 自动启动录音
-            setTimeout(() => {
+            // 等 TTS 播完再开录音，防止回收
+            setTimeout(async () => {
               setWakeDetected(false);
-              // 添加唤醒提示消息
               setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time: nowHHMM() }]);
-              speak('我在，请说您的需求。');
+              await speak('我在，请说您的需求。');
               startRecording();
             }, 800);
             break;
@@ -420,7 +371,6 @@ export default function VoiceAssistant() {
         }
       };
       wakeRec.onend = () => {
-        // 自动重启唤醒监听（持续监听）
         if (wakeRecognitionRef.current === wakeRec && !isRecording) {
           try { wakeRec.start(); } catch(e) {}
         }
@@ -433,12 +383,11 @@ export default function VoiceAssistant() {
     }
   }, [isRecording, startRecording, speak]);
 
-  // 同步唤醒监听函数到 ref（供自动重新唤醒调用，避免循环依赖）
+  // 同步唤醒监听函数到 ref
   useEffect(() => {
     startWakeListeningRef.current = startWakeListening;
   }, [startWakeListening]);
 
-  // 手动开启唤醒词监听（需要用户交互后才能请求麦克风权限）
   const enableWakeWord = useCallback(() => {
     startWakeListening();
   }, [startWakeListening]);
@@ -542,7 +491,6 @@ export default function VoiceAssistant() {
                 </div>
                 <span className="text-xs font-mono" style={{ color: '#00d4ff' }}>{Math.round(audioLevel * 100)}%</span>
               </div>
-              {/* 实时识别文字 */}
               {interimText && (
                 <div className="mt-2 text-xs italic" style={{ color: 'var(--color-text-sub)' }}>
                   识别中: {interimText}
@@ -574,10 +522,10 @@ export default function VoiceAssistant() {
                   color: 'var(--color-text-primary)',
                 }} />
             </div>
-            <button onClick={handleSend}
+            <button onClick={handleSend} disabled={aiLoading}
               className="w-10 h-10 rounded-full flex items-center justify-center transition-all"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))', boxShadow: '0 0 12px rgba(0,212,255,0.3)' }}>
-              <Send size={16} color="#0a0e1a" />
+              style={{ background: aiLoading ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg, var(--color-primary), var(--color-accent))', boxShadow: aiLoading ? 'none' : '0 0 12px rgba(0,212,255,0.3)' }}>
+              {aiLoading ? <Loader2 size={16} className="animate-spin" color="#00d4ff" /> : <Send size={16} color="#0a0e1a" />}
             </button>
           </div>
           {micError && <div className="mt-2 text-xs" style={{ color: '#ff4757' }}>{micError}</div>}

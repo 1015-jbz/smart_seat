@@ -29,3 +29,8 @@ __pycache__/
 *.py[cod]
 backend/data/
 backend/.local_pkgs/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
