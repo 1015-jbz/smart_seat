@@ -1,17 +1,19 @@
 #!/bin/bash
 # ============================================================
-# 智能座舱助手 - 龙芯平台（LoongArch / loong64）环境安装脚本
+# 智能座舱助手 - 龙芯平台（LoongArch64 / loong64）环境安装脚本
 # ============================================================
-# 支持: Loongnix / UOS / KylinOS / Debian-loong64
+# 支持: Loongnix / UOS / KylinOS V10/V11 / Debian-loong64
+# 前置: 建议已装 uv (https://mirrors.loong64.com) + nodejs
 # 用法: chmod +x setup.sh && ./setup.sh
 # ============================================================
 set -e
 
 # ---------- 颜色 ----------
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
-err()   { echo -e "${RED}[ERR]${NC}   $1"; }
+err()   { echo -e "${RED}[ERR ]${NC}  $1"; }
+step()  { echo -e "\n${BLUE}==> $1${NC}"; }
 
 # ---------- 架构检测 ----------
 ARCH=$(uname -m)
@@ -21,104 +23,281 @@ if [[ "$ARCH" != "loongarch64" && "$ARCH" != "loong64" ]]; then
 fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKEND_DIR="${PROJECT_DIR}/backend"
 info "项目目录: ${PROJECT_DIR}"
 
-# ---------- 1. 系统依赖 ----------
-info "步骤 1/5: 安装系统依赖..."
+# ---------- 龙芯 PyPI 镜像 ----------
+LOONG64_PYPI="https://mirrors.loong64.com/pypi/simple"
+TSINGHUA_PYPI="https://pypi.tuna.tsinghua.edu.cn/simple"
 
-install_sys_deps() {
-    if command -v apt &>/dev/null; then
-        sudo apt update -qq
-        sudo apt install -y -qq python3 python3-pip python3-venv python3-opencv nodejs npm curl 2>/dev/null || true
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y python3 python3-pip python3-opencv nodejs npm curl 2>/dev/null || true
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y python3 python3-pip python3-opencv nodejs npm curl 2>/dev/null || true
-    elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm python python-pip opencv nodejs npm curl 2>/dev/null || true
+# ============================================================
+# 步骤 1: 检测并修复 Node.js / npm 环境
+# ============================================================
+step "步骤 1/5: 检测 Node.js 与 npm..."
+
+detect_node_npm() {
+    # 1) 直接从 PATH 找
+    NODE_BIN=""
+    NPM_BIN=""
+    if command -v node &>/dev/null; then
+        NODE_BIN="$(command -v node)"
+    fi
+    if command -v npm &>/dev/null; then
+        NPM_BIN="$(command -v npm)"
+    fi
+
+    # 2) 找常见安装位置
+    for p in /usr/local/bin/node /usr/bin/node /opt/node/bin/node \
+             "$HOME/.nvm/versions/node"/*/bin/node "$HOME/node/bin/node"; do
+        if [ -z "$NODE_BIN" ] && [ -x "$p" ]; then
+            NODE_BIN="$p"
+            break
+        fi
+    done
+    # 根据 node 路径推 npm
+    if [ -z "$NPM_BIN" ] && [ -n "$NODE_BIN" ]; then
+        _npm_candidate="$(dirname "$NODE_BIN")/npm"
+        [ -x "$_npm_candidate" ] && NPM_BIN="$_npm_candidate"
+    fi
+
+    # 3) 尝试加载 nvm（用户交互式shell有，但脚本里没加载）
+    if [ -z "$NODE_BIN" ] || [ -z "$NPM_BIN" ]; then
+        for f in "$HOME/.nvm/nvm.sh" /usr/share/nvm/nvm.sh /etc/profile.d/nvm.sh; do
+            if [ -f "$f" ]; then
+                # shellcheck disable=SC1090
+                source "$f" 2>/dev/null || true
+                if command -v nvm &>/dev/null; then
+                    nvm use default >/dev/null 2>&1 || nvm use system >/dev/null 2>&1 || true
+                fi
+                command -v node &>/dev/null && NODE_BIN="$(command -v node)"
+                command -v npm &>/dev/null && NPM_BIN="$(command -v npm)"
+                [ -n "$NODE_BIN" ] && [ -n "$NPM_BIN" ] && break
+            fi
+        done
+    fi
+
+    echo "$NODE_BIN|$NPM_BIN"
+}
+
+DETECTED=$(detect_node_npm)
+NODE_BIN="$(echo "$DETECTED" | cut -d'|' -f1)"
+NPM_BIN="$(echo "$DETECTED" | cut -d'|' -f2)"
+
+if [ -n "$NODE_BIN" ]; then
+    NODE_VER=$("$NODE_BIN" -v 2>/dev/null || echo "?")
+    info "检测到 Node.js: $NODE_BIN ($NODE_VER)"
+else
+    warn "未在 PATH 中找到 node!"
+fi
+
+if [ -n "$NPM_BIN" ]; then
+    NPM_VER=$("$NPM_BIN" -v 2>/dev/null || echo "?")
+    info "检测到 npm:    $NPM_BIN ($NPM_VER)"
+else
+    err "未在 PATH 中找到 npm!"
+    echo ""
+    echo "请按以下任一方式修复后重新运行:"
+    echo "  方式 1) 用 apt 安装 (Kylin/UOS):"
+    echo "     sudo apt update && sudo apt install -y nodejs npm"
+    echo ""
+    echo "  方式 2) 如果 node 已装在 /opt/node 或 ~/node，把 bin 加到 PATH:"
+    echo "     export PATH=\$PATH:/opt/node/bin:~/node/bin"
+    echo "     echo 'export PATH=\$PATH:/opt/node/bin:~/node/bin' >> ~/.bashrc"
+    echo ""
+    echo "  方式 3) 查找系统里的 node 二进制:"
+    echo "     sudo find / -name 'node' -type f 2>/dev/null | head -5"
+    echo "     # 找到后把所在目录 export PATH=\$PATH:目录"
+    echo ""
+    read -rp "按回车退出，请先修复 npm 环境..." _
+    exit 1
+fi
+
+# 确保后续调用的 npm/node 就是检测到的
+export PATH="$(dirname "$NPM_BIN"):$PATH"
+
+# ============================================================
+# 步骤 2: 创建 Python 虚拟环境（优先用 uv，回退 venv）
+# ============================================================
+step "步骤 2/5: 创建 Python 虚拟环境..."
+cd "$BACKEND_DIR"
+
+VENV_DIR="$BACKEND_DIR/.venv"
+UV_EXTRA=""
+
+if command -v uv &>/dev/null; then
+    info "检测到 uv 工具，使用 uv 创建虚拟环境并配置 loong64 镜像..."
+    export UV_EXTRA_INDEX_URL="$LOONG64_PYPI"
+    UV_EXTRA="--extra-index-url $LOONG64_PYPI"
+    info "  UV_EXTRA_INDEX_URL = $UV_EXTRA_INDEX_URL"
+
+    if [ ! -d "$VENV_DIR" ]; then
+        uv venv "$VENV_DIR" --python python3
+        info ".venv (uv) 创建完成"
     else
-        warn "未识别包管理器，跳过系统依赖安装，请手动安装 python3 / pip / nodejs / npm"
+        info ".venv 已存在，跳过创建"
+    fi
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+
+    uv pip install --upgrade pip -q
+else
+    warn "未检测到 uv，回退到 python3 -m venv。建议安装 uv 以启用 loong64 镜像源:"
+    warn "  curl -LsSf https://mirrors.loong64.com/uv/install.sh | sh"
+    if [ ! -d "$VENV_DIR" ]; then
+        python3 -m venv "$VENV_DIR"
+        info ".venv 创建完成"
+    else
+        info ".venv 已存在，跳过创建"
+    fi
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+    pip install --upgrade pip -q -i "$TSINGHUA_PYPI"
+fi
+
+PY_VER=$(python --version 2>&1)
+info "当前 Python: $PY_VER"
+
+# ============================================================
+# 步骤 3: 安装 Python 依赖（onnxruntime / opencv 优先 loong64 镜像）
+# ============================================================
+step "步骤 3/5: 安装 Python 依赖..."
+
+install_core() {
+    info "  → 核心依赖 (FastAPI / Uvicorn / SQLAlchemy / httpx / Flask)..."
+    if command -v uv &>/dev/null; then
+        uv pip install \
+            "fastapi>=0.110.0" "uvicorn[standard]>=0.27.0" "sqlalchemy>=2.0.0" \
+            "pydantic>=2.0.0" "httpx>=0.27.0" "python-dotenv>=1.0.0" \
+            "Pillow>=10.0.0" "flask>=3.0.0" -q
+    else
+        pip install \
+            "fastapi>=0.110.0" "uvicorn[standard]>=0.27.0" "sqlalchemy>=2.0.0" \
+            "pydantic>=2.0.0" "httpx>=0.27.0" "python-dotenv>=1.0.0" \
+            "numpy>=1.24.0" "Pillow>=10.0.0" "flask>=3.0.0" \
+            -q -i "$TSINGHUA_PYPI"
     fi
 }
-install_sys_deps
+install_core
 
-# ---------- 2. Python 虚拟环境 ----------
-info "步骤 2/5: 创建 Python 虚拟环境..."
-cd "${PROJECT_DIR}/backend"
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
-    info "venv 创建完成"
+# numpy / opencv-python: 龙芯有 loong64 whl
+info "  → numpy + opencv-python (优先 loong64 镜像)..."
+if command -v uv &>/dev/null; then
+    uv pip install "numpy>=1.24.0" "opencv-python>=4.8.0" -q $UV_EXTRA || \
+        uv pip install "numpy>=1.24.0" "opencv-python>=4.8.0" -q
 else
-    info "venv 已存在，跳过"
-fi
-source venv/bin/activate
-pip install --upgrade pip -q
-
-# ---------- 3. Python 依赖 ----------
-info "步骤 3/5: 安装 Python 依赖..."
-
-# 核心依赖（纯 Python，所有平台通用）
-info "  → 核心依赖 (FastAPI / SQLAlchemy / httpx)..."
-pip install fastapi>=0.110.0 "uvicorn[standard]>=0.27.0" sqlalchemy>=2.0.0 \
-    pydantic>=2.0.0 httpx>=0.27.0 python-dotenv>=1.0.0 numpy>=1.24.0 \
-    Pillow>=10.0.0 flask>=3.0.0 -q
-
-# opencv-python: 优先用系统包 (python3-opencv)，pip 备用
-info "  → OpenCV..."
-if python3 -c "import cv2" 2>/dev/null; then
-    info "    使用系统 opencv"
-else
-    pip install opencv-python>=4.8.0 -q 2>/dev/null || \
-        warn "    opencv-python 安装失败，请手动执行: sudo apt install python3-opencv"
+    pip install "numpy>=1.24.0" "opencv-python>=4.8.0" -q \
+        --extra-index-url "$LOONG64_PYPI" -i "$TSINGHUA_PYPI" || \
+    pip install "numpy>=1.24.0" "opencv-python>=4.8.0" -q -i "$TSINGHUA_PYPI"
 fi
 
-# onnxruntime: 龙芯无官方 whl，尝试安装，失败则跳过（代码会自动降级）
-info "  → ONNX Runtime (可选，失败不影响运行)..."
-pip install onnxruntime>=1.15.0 -q 2>/dev/null && \
-    info "    ONNX Runtime 安装成功" || \
-    warn "    ONNX Runtime 不可用（龙芯无预编译包），表情识别将使用 MediaPipe 规则引擎"
+# onnxruntime: 龙芯 loong64 镜像里有
+info "  → onnxruntime (可选，表情识别 ONNX 推理引擎)..."
+ONNX_OK=0
+if command -v uv &>/dev/null; then
+    uv pip install "onnxruntime>=1.15.0" -q $UV_EXTRA && ONNX_OK=1 || ONNX_OK=0
+else
+    pip install "onnxruntime>=1.15.0" -q \
+        --extra-index-url "$LOONG64_PYPI" -i "$TSINGHUA_PYPI" && ONNX_OK=1 || ONNX_OK=0
+fi
+if [ $ONNX_OK -eq 1 ]; then
+    info "    onnxruntime 安装成功 ✓"
+else
+    warn "    onnxruntime 不可用，表情识别将自动降级为规则引擎 (LBP)"
+fi
 
-# mediapipe: 龙芯无官方 whl，源码编译极难，标记为可选
-info "  → MediaPipe (可选，失败不影响运行)..."
-pip install mediapipe>=0.10.0 -q 2>/dev/null && \
-    info "    MediaPipe 安装成功" || \
-    warn "    MediaPipe 不可用（龙芯无预编译包），将降级到 OpenCV Haar Cascade 人脸检测"
+# mediapipe: 龙芯官方无 whl，跳过；代码里会回退到 OpenCV Haar
+info "  → mediapipe (可选，人脸关键点)..."
+MP_OK=0
+if command -v uv &>/dev/null; then
+    uv pip install "mediapipe>=0.10.0" -q 2>/dev/null && MP_OK=1 || MP_OK=0
+else
+    pip install "mediapipe>=0.10.0" -q -i "$TSINGHUA_PYPI" 2>/dev/null && MP_OK=1 || MP_OK=0
+fi
+if [ $MP_OK -eq 1 ]; then
+    info "    mediapipe 安装成功 ✓"
+else
+    warn "    mediapipe 不可用，人脸检测将降级为 OpenCV Haar Cascade"
+fi
 
+# 创建 data 目录
+mkdir -p "$BACKEND_DIR/data"
 deactivate
 
-# ---------- 4. 前端依赖 ----------
-info "步骤 4/5: 安装前端依赖..."
-cd "${PROJECT_DIR}"
-npm install --no-audit --no-fund 2>/dev/null || {
-    warn "npm install 失败，尝试 cnpm..."
-    npm install -g cnpm --registry=https://registry.npmmirror.com 2>/dev/null || true
-    cnpm install 2>/dev/null || warn "前端依赖安装失败，请手动执行 npm install"
-}
-info "    前端依赖安装完成"
+# ============================================================
+# 步骤 4: 前端依赖安装
+# ============================================================
+step "步骤 4/5: 安装前端依赖..."
+cd "$PROJECT_DIR"
 
-# ---------- 5. 环境变量 ----------
-info "步骤 5/5: 检查环境变量..."
-if [ ! -f "${PROJECT_DIR}/backend/.env" ]; then
-    warn "backend/.env 不存在，请手动创建并配置 DEEPSEEK_API_KEY"
-    echo 'DEEPSEEK_API_KEY=your_api_key_here' > "${PROJECT_DIR}/backend/.env"
-    info "已生成模板 backend/.env，请编辑填入 API Key"
+export npm_config_registry="https://registry.npmmirror.com"
+info "  使用镜像: $npm_config_registry"
+
+if [ -d "node_modules" ]; then
+    info "  node_modules 已存在，跳过（如需重装请先 rm -rf node_modules）"
 else
-    info "backend/.env 已存在"
+    if "$NPM_BIN" install --no-audit --no-fund --registry=https://registry.npmmirror.com; then
+        info "  前端依赖安装完成 ✓"
+    else
+        warn "  npm install 失败，尝试清理缓存后重试一次..."
+        "$NPM_BIN" cache clean --force 2>/dev/null || true
+        rm -rf node_modules package-lock.json 2>/dev/null || true
+        if "$NPM_BIN" install --no-audit --no-fund --registry=https://registry.npmmirror.com; then
+            info "  前端依赖安装完成 ✓"
+        else
+            err "  前端依赖仍失败，请手动执行:"
+            err "    cd $PROJECT_DIR && npm install --registry=https://registry.npmmirror.com"
+            # 不 exit，继续往下走，让用户手动修
+        fi
+    fi
 fi
 
-# ---------- 完成 ----------
-echo ""
-info "========================================"
-info "  安装完成！"
-info "  运行 ./start.sh 启动所有服务"
-info "  或手动: cd backend && source venv/bin/activate"
-info "========================================"
+# ============================================================
+# 步骤 5: 环境变量模板
+# ============================================================
+step "步骤 5/5: 配置检查..."
+if [ ! -f "$BACKEND_DIR/.env" ]; then
+    warn "backend/.env 不存在，已生成模板（聊天功能需填 DEEPSEEK_API_KEY）"
+    cat > "$BACKEND_DIR/.env" <<'EOF'
+# 智能座舱助手后端环境变量
+# 聊天 API（可选，留空则聊天页面回退到本地 mock）
+DEEPSEEK_API_KEY=your_api_key_here
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 
-# 显示可用组件状态
+# 摄像头服务（可选，默认 7861）
+CAMERA_PORT=7861
+EOF
+else
+    info "backend/.env 已存在 ✓"
+fi
+
+# ============================================================
+# 安装完成 - 状态报告
+# ============================================================
 echo ""
-echo "组件检测:"
-python3 -c "import cv2; print('  OpenCV       ✓', cv2.__version__)" 2>/dev/null || echo "  OpenCV       ✗"
-python3 -c "import onnxruntime; print('  ONNX Runtime ✓', onnxruntime.__version__)" 2>/dev/null || echo "  ONNX Runtime ✗ (降级运行)"
-python3 -c "import mediapipe; print('  MediaPipe    ✓', mediapipe.__version__)" 2>/dev/null || echo "  MediaPipe    ✗ (Haar 级联降级)"
-echo "  Node.js      $(node -v 2>/dev/null || echo '✗')"
-echo "  npm          $(npm -v 2>/dev/null || echo '✗')"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  安装完成！下一步: ./start.sh${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo "Python 组件状态:"
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+python -c "import fastapi;   print('  FastAPI      ✓', fastapi.__version__)" 2>/dev/null || echo "  FastAPI      ✗"
+python -c "import uvicorn;   print('  Uvicorn      ✓', uvicorn.__version__)" 2>/dev/null || echo "  Uvicorn      ✗"
+python -c "import sqlalchemy;print('  SQLAlchemy   ✓', sqlalchemy.__version__)" 2>/dev/null || echo "  SQLAlchemy   ✗"
+python -c "import numpy;     print('  NumPy        ✓', numpy.__version__)" 2>/dev/null || echo "  NumPy        ✗"
+python -c "import cv2;       print('  OpenCV       ✓', cv2.__version__)" 2>/dev/null || echo "  OpenCV       ✗"
+python -c "import onnxruntime;print('  ONNX Runtime ✓', onnxruntime.__version__)" 2>/dev/null || echo "  ONNX Runtime ✗ (降级为 LBP 规则引擎)"
+python -c "import mediapipe; print('  MediaPipe    ✓', mediapipe.__version__)" 2>/dev/null || echo "  MediaPipe    ✗ (降级为 Haar 级联)"
+python -c "import flask;     print('  Flask        ✓', flask.__version__)" 2>/dev/null || echo "  Flask        ✗"
+deactivate
+echo ""
+echo "前端/工具链:"
+"$NODE_BIN" -v 2>/dev/null | awk '{print "  Node.js      ✓ "$1}' || echo "  Node.js      ✗"
+"$NPM_BIN"  -v 2>/dev/null | awk '{print "  npm          ✓ "$1}' || echo "  npm          ✗"
+command -v uv &>/dev/null && echo "  uv           ✓ $(uv --version 2>/dev/null | head -1)" || echo "  uv           ✗ (建议安装: curl -LsSf https://mirrors.loong64.com/uv/install.sh | sh)"
+echo ""
+echo "启动:"
+echo "  chmod +x start.sh && ./start.sh"
+echo "  手动启动: cd backend && source .venv/bin/activate && PYTHONPATH=. uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+echo "  前端另开终端: npm run dev"
+echo ""

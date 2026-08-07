@@ -51,8 +51,8 @@ REM --- Step 5: Install dependencies ---
 echo Installing dependencies ... first run is slow, please wait.
 echo.
 
-".venv\Scripts\python.exe" -m pip install --upgrade pip --no-cache-dir -i https://pypi.org/simple
-".venv\Scripts\python.exe" -m pip install -r requirements.txt --no-cache-dir -i https://pypi.org/simple
+".venv\Scripts\python.exe" -m pip install --upgrade pip --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple
+".venv\Scripts\python.exe" -m pip install -r requirements.txt --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 if errorlevel 1 (
     echo.
