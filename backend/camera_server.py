@@ -1,13 +1,13 @@
 """
-智能座舱相机+表情识别服务 — 纯表情识别管线
+智能座舱相机+表情识别+安全监控 — 完整管线
 
 架构:
   采集线程: 摄像头 → 画标注 → JPEG → MJPEG 流
-  识别线程: 取出帧 → MediaPipe 人脸关键点 → ONNX 表情识别 → 更新缓存
+  识别线程: 取出帧 → MediaPipe 人脸关键点 → ONNX 表情识别 + 安全检测 → 更新缓存
 
 端点:
-  GET  /video_feed    MJPEG 视频流（带人脸框+表情标注）
-  GET  /api/state     当前状态（表情）
+  GET  /video_feed    MJPEG 视频流（带人脸框+表情+安全标注）
+  GET  /api/state     当前状态（表情 + 安全）
   GET  /api/health    健康检查
 
 用法:
@@ -139,7 +139,8 @@ EMOTION_ZH = {
     "disgusted": "厌恶",
 }
 
-_latest_frame = None          # 最新带标注帧 (JPEG bytes)
+_latest_frame = None          # 最新表情模式帧 (JPEG bytes)
+_latest_frame_safety = None   # 最新安全模式帧 (JPEG bytes, 无表情标签)
 _latest_emotion = "neutral"
 _latest_confidence = 0.0
 _lock = threading.Lock()
@@ -152,6 +153,18 @@ _cached_landmarks = None      # MediaPipe landmarks
 
 _pending_lock = threading.Lock()
 _pending_frame = None
+
+# 安全监控状态（线程安全，与表情并行）
+_cached_safety = {
+    "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
+    "fatigue_score": 0.0, "alert_level": "normal", "eye_closed": False,
+}
+_safety_lock = threading.Lock()
+_eye_closure_history = []    # 最近 150 帧眼睛闭合记录
+_yawn_timestamps = []         # 哈欠发生时间戳
+_was_yawning = False
+_distraction_start = None
+_last_safety_alert_time = 0.0
 
 # ============================================================
 # ONNX 表情识别
@@ -310,17 +323,115 @@ def _detect_emotion_mediapipe(face_img_rgb, face_landmarks):
 
 
 # ============================================================
+# 安全监控 (疲劳/哈欠/分心 — 纯检测，不覆写表情)
+# ============================================================
+def _compute_ear(landmarks, w, h):
+    """眼部长宽比 Eye Aspect Ratio — 判断眼睛闭合"""
+    def pt(idx):
+        lm = landmarks[idx]
+        return np.array([lm.x * w, lm.y * h])
+    def _ear(i1, i2, i3, i4):
+        eye = [pt(i1), pt(i2), pt(i3), pt(i4)]
+        v = np.linalg.norm(eye[2] - eye[3])
+        d = np.linalg.norm(eye[0] - eye[1])
+        return float(v / d) if d > 1e-6 else 0.0
+    return (_ear(33, 133, 159, 145) + _ear(362, 263, 387, 373)) / 2
+
+def _compute_mar(landmarks, w, h):
+    """嘴部长宽比 Mouth Aspect Ratio — 判断哈欠"""
+    def pt(idx):
+        lm = landmarks[idx]
+        return np.array([lm.x * w, lm.y * h])
+    top = pt(13); bottom = pt(14); left = pt(61); right = pt(291)
+    width = np.linalg.norm(left - right)
+    if width < 1e-6: return 0.0
+    return float(np.linalg.norm(top - bottom) / width)
+
+def _detect_gaze(landmarks, w, h):
+    """视线方向检测"""
+    nose = landmarks[1]
+    chin = landmarks[152]
+    nose_x = nose.x * w; nose_y = nose.y * h; chin_y = chin.y * h
+    head_down = (chin_y - nose_y) / h > 0.22
+    nose_offset = (nose_x - w/2) / w
+    if head_down: return "down", True
+    elif nose_offset > 0.18: return "right", True
+    elif nose_offset < -0.18: return "left", True
+    else: return "forward", False
+
+def _run_safety_check(landmarks, w, h):
+    """安全检测：EAR + MAR + 视线 → 疲劳评分 / 分心 / 哈欠"""
+    global _eye_closure_history, _yawn_timestamps, _was_yawning, _distraction_start, _last_safety_alert_time
+
+    ear = _compute_ear(landmarks, w, h)
+    is_eye_closed = ear < 0.2
+    _eye_closure_history.append(is_eye_closed)
+    if len(_eye_closure_history) > 150:
+        _eye_closure_history.pop(0)
+    perclos = sum(_eye_closure_history) / max(len(_eye_closure_history), 1)
+
+    mar = _compute_mar(landmarks, w, h)
+    is_yawning = mar > 0.6
+    now = time.time()
+    if is_yawning and not _was_yawning:
+        _yawn_timestamps.append(now)
+    _was_yawning = is_yawning
+    _yawn_timestamps = [t for t in _yawn_timestamps if t > now - 60]
+    yawn_count = len(_yawn_timestamps)
+
+    gaze, is_distracted = _detect_gaze(landmarks, w, h)
+    if is_distracted:
+        if _distraction_start is None: _distraction_start = now
+        distraction_dur = now - _distraction_start
+    else:
+        _distraction_start = None; distraction_dur = 0.0
+
+    # 疲劳评分：PERCLOS 为主，哈欠/低头/分心为辅（阈值调高，减少误报）
+    fatigue_score = 0.0
+    if perclos > 0.4: fatigue_score += min(40, perclos * 100)
+    if yawn_count >= 4: fatigue_score += 20
+    if gaze == "down" and perclos > 0.25: fatigue_score += 10
+    if distraction_dur > 5.0: fatigue_score += min(15, distraction_dur * 2)
+
+    if fatigue_score >= 70: alert_level = "critical"
+    elif fatigue_score >= 45: alert_level = "high"
+    elif fatigue_score >= 25: alert_level = "warning"
+    else: alert_level = "normal"
+
+    with _safety_lock:
+        old_level = _cached_safety.get("_prev_level", "normal")
+        # 告警消息管理：降级到 normal 时清空，升级时设置新消息
+        if alert_level == "normal":
+            _cached_safety["alert_message"] = ""
+        elif alert_level != old_level and now - _last_safety_alert_time > 15:
+            _last_safety_alert_time = now
+            _cached_safety["alert_message"] = {
+                "warning": "请注意休息，您已出现疲劳迹象。",
+                "high": "警告！检测到明显疲劳，请尽快休息！",
+                "critical": "危险！严重疲劳，请立即停车！",
+            }.get(alert_level, "")
+        _cached_safety["_prev_level"] = alert_level
+        _cached_safety.update({
+            "perclos": perclos, "yawn_count": yawn_count, "gaze": gaze,
+            "distraction_dur": distraction_dur, "eye_closed": is_eye_closed,
+            "fatigue_score": fatigue_score, "alert_level": alert_level,
+        })
+
+
+# ============================================================
 # 后台线程
 # ============================================================
 _video_cap = None
 _video_running = False
 
-_DETECT_EVERY_N = 5  # 每 N 帧做一次表情检测
+_DETECT_EVERY_N = 3  # 每 N 帧做一次检测（表情 + 安全）
 
 def _detector_loop():
     """识别线程：异步表情检测"""
     global _cached_emotion, _cached_conf, _cached_box, _cached_landmarks, _pending_frame
     import mediapipe as mp
+
+    _no_face_count = 0  # 连续无人脸帧计数
 
     while _video_running:
         with _pending_lock:
@@ -339,34 +450,60 @@ def _detector_loop():
                 ts = int(time.time() * 1000)
                 result = _mp_face_landmarker.detect_for_video(mp_img, ts)
 
+                face_detected = False
                 if result and result.face_landmarks:
                     lm = result.face_landmarks[0]
                     xs = [p.x * w for p in lm]
                     ys = [p.y * h for p in lm]
-                    new_box = (int(min(xs)) - 10, int(min(ys)) - 10,
-                               int(max(xs) - min(xs)) + 20, int(max(ys) - min(ys)) + 20)
-                    new_box = (max(0, new_box[0]), max(0, new_box[1]),
-                               min(w - new_box[0], new_box[2]), min(h - new_box[1], new_box[3]))
-                    with _cache_lock:
-                        _cached_landmarks = lm
-                        _cached_box = new_box
-
-                    # 表情识别
-                    new_emo, new_conf = None, 0.0
-                    with _cache_lock:
-                        box = _cached_box
-                    if box is not None:
-                        x, y, fw, fh = box
-                        face_crop = frame[max(0,y):min(h,y+fh), max(0,x):min(w,x+fw)]
-                        if face_crop.size > 0:
-                            new_emo, new_conf = detect_emotion_from_landmarks(
-                                cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB), fw, fh)
-                    if new_emo is None:
-                        new_emo, new_conf = _detect_emotion_mediapipe(rgb, lm)
-                    if new_emo is not None:
+                    face_w = int(max(xs) - min(xs))
+                    face_h = int(max(ys) - min(ys))
+                    # 过滤太小的误检人脸（至少 60x80 像素）
+                    if face_w >= 60 and face_h >= 80:
+                        face_detected = True
+                        new_box = (int(min(xs)) - 10, int(min(ys)) - 10,
+                                   face_w + 20, face_h + 20)
+                        new_box = (max(0, new_box[0]), max(0, new_box[1]),
+                                   min(w - new_box[0], new_box[2]), min(h - new_box[1], new_box[3]))
                         with _cache_lock:
-                            _cached_emotion = new_emo
-                            _cached_conf = new_conf
+                            _cached_landmarks = lm
+                            _cached_box = new_box
+
+                        # 安全检测（疲劳/哈欠/分心）
+                        _run_safety_check(lm, w, h)
+
+                        # 表情识别
+                        new_emo, new_conf = None, 0.0
+                        with _cache_lock:
+                            box = _cached_box
+                        if box is not None:
+                            x, y, fw, fh = box
+                            face_crop = frame[max(0,y):min(h,y+fh), max(0,x):min(w,x+fw)]
+                            if face_crop.size > 0:
+                                new_emo, new_conf = detect_emotion_from_landmarks(
+                                    cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB), fw, fh)
+                        if new_emo is None:
+                            new_emo, new_conf = _detect_emotion_mediapipe(rgb, lm)
+                        if new_emo is not None:
+                            with _cache_lock:
+                                _cached_emotion = new_emo
+                                _cached_conf = new_conf
+
+                # 无人脸（或人脸太小）→ 连续 N 帧后重置
+                if face_detected:
+                    _no_face_count = 0
+                else:
+                    _no_face_count += 1
+                    if _no_face_count >= 15:
+                        with _safety_lock:
+                            _cached_safety.update({
+                                "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
+                                "distraction_dur": 0.0, "eye_closed": False,
+                                "fatigue_score": 0.0, "alert_level": "normal",
+                                "alert_message": "",
+                            })
+                            _cached_safety["_prev_level"] = "normal"
+                        global _distraction_start
+                        _distraction_start = None
             else:
                 # Haar Cascade 降级路径
                 if _face_cascade is not None:
@@ -438,26 +575,70 @@ def _capture_loop():
             emo = _cached_emotion
             cnf = _cached_conf
 
+        # 读取安全监控数据
+        with _safety_lock:
+            safety = dict(_cached_safety)
+
+        # 基础帧（无标注，供安全模式使用）
+        base_frame = frame.copy()
+
+        # --- 安全标注（两个模式都展示）---
+        def _draw_safety_overlay(img):
+            alert_level = safety.get('alert_level', 'normal')
+            alert_color_map = {
+                'normal': (0, 255, 128), 'warning': (0, 165, 255),
+                'high': (0, 128, 255), 'critical': (0, 0, 255),
+            }
+            s_color = alert_color_map.get(alert_level, (180, 180, 180))
+            s_font = cv2.FONT_HERSHEY_SIMPLEX
+            s_scale = 0.4; s_thick = 1
+            h_img, w_img = img.shape[:2]
+            lines = [
+                f"Fatigue: {safety.get('fatigue_score', 0):.0f}  {alert_level}",
+                f"PERCLOS: {safety.get('perclos', 0):.2f}  Gaze: {safety.get('gaze', 'fwd')}",
+                f"Yawns: {safety.get('yawn_count', 0)}  Dist: {safety.get('distraction_dur', 0):.1f}s",
+            ]
+            for i, line in enumerate(lines):
+                (tw2, th2), _ = cv2.getTextSize(line, s_font, s_scale, s_thick)
+                cv2.rectangle(img, (w_img - tw2 - 12, 4 + i * 15),
+                              (w_img - 2, 4 + (i + 1) * 15 + 1), (0, 0, 0), -1)
+                cv2.putText(img, line, (w_img - tw2 - 8, 15 + i * 15),
+                            s_font, s_scale, s_color, s_thick)
+
+        # 安全模式帧：仅安全标注 + 人脸框（无表情标签）
+        safety_frame = frame.copy()
         if box is not None:
-            annotated = frame.copy()
+            x, y, fw, fh = box
+            cv2.rectangle(safety_frame, (x, y), (x+fw, y+fh), (0, 255, 128), 2)
+        else:
+            cv2.putText(safety_frame, "Camera OK - 等待人脸",
+                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        _draw_safety_overlay(safety_frame)
+
+        # 表情模式帧：人脸框 + 表情标签 + 安全标注
+        if box is not None:
+            emotion_frame = frame.copy()
             x, y, fw, fh = box
             color = EMOTION_COLORS.get(emo, (180, 180, 180))
             label = f"{EMOTION_ZH.get(emo, emo)} ({cnf:.0%})"
-            cv2.rectangle(annotated, (x, y), (x+fw, y+fh), color, 2)
+            cv2.rectangle(emotion_frame, (x, y), (x+fw, y+fh), color, 2)
             font = cv2.FONT_HERSHEY_SIMPLEX
             scale = 0.7; thick = 2
             (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
-            cv2.rectangle(annotated, (x-2, y-th-12), (x+tw+8, y+3), color, -1)
+            cv2.rectangle(emotion_frame, (x-2, y-th-12), (x+tw+8, y+3), color, -1)
             text_color = (0, 0, 0) if sum(color) > 400 else (255, 255, 255)
-            cv2.putText(annotated, label, (x+3, y-3), font, scale, text_color, thick)
+            cv2.putText(emotion_frame, label, (x+3, y-3), font, scale, text_color, thick)
         else:
-            annotated = frame
-            cv2.putText(annotated, "Camera OK - 等待人脸",
+            emotion_frame = frame.copy()
+            cv2.putText(emotion_frame, "Camera OK - 等待人脸",
                         (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        _draw_safety_overlay(emotion_frame)
 
-        _, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        _, jpeg_emotion = cv2.imencode('.jpg', emotion_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        _, jpeg_safety = cv2.imencode('.jpg', safety_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
         with _lock:
-            _latest_frame = jpeg.tobytes()
+            _latest_frame = jpeg_emotion.tobytes()
+            _latest_frame_safety = jpeg_safety.tobytes()
             _latest_emotion = _cached_emotion
             _latest_confidence = _cached_conf
 
@@ -494,13 +675,19 @@ def start_camera():
 
 @flask_app.route('/video_feed')
 def video_feed():
-    """MJPEG 视频流"""
+    """MJPEG 视频流
+    ?mode=emotion (默认) — 人脸框 + 表情标签 + 安全标注
+    ?mode=safety — 仅人脸框 + 安全标注（无表情标签）
+    """
+    mode = request.args.get('mode', 'emotion')
     start_camera()
     def generate():
         frame_interval = 1.0 / 20
         while True:
             with _lock:
-                frame = _latest_frame
+                frame = _latest_frame_safety if mode == 'safety' else _latest_frame
+                if frame is None:
+                    frame = _latest_frame  # 安全帧未就绪时回退到表情帧
             if frame is None:
                 time.sleep(0.05)
                 continue
@@ -511,14 +698,28 @@ def video_feed():
 
 @flask_app.route('/api/state')
 def api_state():
-    """当前表情检测状态"""
+    """当前状态：表情 + 安全监控数据"""
     with _lock:
         emo = _latest_emotion
         conf = _latest_confidence
+    with _safety_lock:
+        safety = dict(_cached_safety)
+        # 清理内部字段，不暴露给前端
+        safety.pop('_prev_level', None)
     return jsonify({
         'emotion': emo,
         'emotion_zh': EMOTION_ZH.get(emo, '未知'),
         'confidence': round(conf, 2),
+        'safety': {
+            'perclos': round(safety.get('perclos', 0), 3),
+            'yawn_count': safety.get('yawn_count', 0),
+            'gaze': safety.get('gaze', 'forward'),
+            'distraction_dur': round(safety.get('distraction_dur', 0), 1),
+            'eye_closed': safety.get('eye_closed', False),
+            'fatigue_score': round(safety.get('fatigue_score', 0), 1),
+            'alert_level': safety.get('alert_level', 'normal'),
+            'alert_message': safety.get('alert_message', ''),
+        },
     })
 
 

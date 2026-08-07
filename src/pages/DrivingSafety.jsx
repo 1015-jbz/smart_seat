@@ -30,6 +30,9 @@ export default function DrivingSafety() {
   const [alarmEnabled, setAlarmEnabled] = useState(true);
   const greetingPlayedRef = useRef(false);
 
+  // 从相机后端 /api/state 拉取的实时安全数据（替代模拟数据）
+  const [cameraSafety, setCameraSafety] = useState(null);
+
   // 后端驾驶会话 ID（开始驾驶时创建，结束驾驶时关闭）
   const sessionIdRef = useRef(null);
   // 后端驾驶统计（加载失败为 null，UI 静默降级）
@@ -129,6 +132,74 @@ export default function DrivingSafety() {
       .catch(() => { /* 静默 */ });
   }, []);
 
+  // 轮询相机后端 /api/state 获取实时安全检测数据
+  useEffect(() => {
+    if (!cameraActive) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(`${CAMERA_SERVER}/api/state`, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (data.safety) setCameraSafety(data.safety);
+      } catch (_) { /* 静默降级 */ }
+    };
+    poll();
+    const interval = setInterval(poll, 500);
+    return () => { active = false; clearInterval(interval); };
+  }, [cameraActive]);
+
+  // 合并实时相机数据与 VehicleStore 模拟数据（相机优先）
+  // 归一化告警等级: camera(正常/警告/高危/危险) ↔ UI(正常/预警/危险)
+  const _levelMap = { normal: 'normal', warning: 'warning', high: 'danger', critical: 'danger' };
+  const realSafety = {
+    fatigueScore: cameraSafety?.fatigue_score ?? safety.fatigueScore,
+    alertLevel: _levelMap[cameraSafety?.alert_level] ?? safety.alertLevel,
+    eyeClosureRate: cameraSafety?.perclos ?? safety.eyeClosureRate,
+    yawnsPerMin: cameraSafety?.yawn_count ?? safety.yawnsPerMin,
+    gazeDirection: cameraSafety?.gaze === 'forward' ? '前方' : cameraSafety?.gaze === 'down' ? '下方' : cameraSafety?.gaze === 'left' ? '左偏' : cameraSafety?.gaze === 'right' ? '右偏' : safety.gazeDirection,
+    distractionDuration: cameraSafety?.distraction_dur ?? safety.distractionDuration,
+    heartRate: safety.heartRate,  // 心率仅 VehicleStore 提供
+    alerts: safety.alerts,
+    eyeClosed: cameraSafety?.eye_closed ?? false,
+  };
+
+  // 实时相机语音提醒：分心/闭眼超过阈值
+  const lastCameraSpeakRef = useRef(0);
+  useEffect(() => {
+    if (!cameraSafety || !alarmEnabled) return;
+    const now = Date.now();
+    if (now - lastCameraSpeakRef.current < 10000) return; // 10s 间隔
+    const { distraction_dur, eye_closed, alert_message } = cameraSafety;
+    if (alert_message && alert_message.length > 0) {
+      // 疲劳告警消息优先
+      if (window.speechSynthesis) {
+        const utter = new SpeechSynthesisUtterance(alert_message);
+        utter.lang = 'zh-CN'; utter.rate = 1.1;
+        window.speechSynthesis.speak(utter);
+        lastCameraSpeakRef.current = now;
+      }
+    } else if (distraction_dur > 3.0) {
+      if (window.speechSynthesis) {
+        const utter = new SpeechSynthesisUtterance('请注意前方路况，不要分心驾驶。');
+        utter.lang = 'zh-CN'; utter.rate = 1.1;
+        window.speechSynthesis.speak(utter);
+        lastCameraSpeakRef.current = now;
+      }
+    } else if (eye_closed) {
+      // 闭眼超过阈值时提醒（由后端 PERCLOS 判断）
+      if (window.speechSynthesis) {
+        const utter = new SpeechSynthesisUtterance('请保持注意力集中，注意行车安全。');
+        utter.lang = 'zh-CN'; utter.rate = 1.1;
+        window.speechSynthesis.speak(utter);
+        lastCameraSpeakRef.current = now;
+      }
+    }
+  }, [cameraSafety, alarmEnabled]);
+
   // 疲劳警报声（Web Audio API 生成）
   const playAlarm = useCallback(() => {
     if (!alarmEnabled) return;
@@ -157,7 +228,7 @@ export default function DrivingSafety() {
 
   // 疲劳告警 + 语音提醒 + 后端疲劳事件记录
   useEffect(() => {
-    const level = safety.alertLevel;
+    const level = realSafety.alertLevel;
     if (level === 'danger' && alarmEnabled) {
       playAlarm();
       // 语音提醒（每10秒一次，避免频繁）
@@ -188,7 +259,7 @@ export default function DrivingSafety() {
         // 后端 level 字段使用中文：轻微/中度/严重
         const backendLevel = level === 'warning' ? '轻微' : '严重';
         recordFatigueEvent({
-          score: safety.fatigueScore,
+          score: realSafety.fatigueScore,
           level: backendLevel,
           durationSeconds: 60, // 估算持续 60s
           actionTaken: level === 'danger' ? '语音+警报提醒' : '语音提醒',
@@ -198,7 +269,7 @@ export default function DrivingSafety() {
     }
 
     prevAlertLevelRef.current = level;
-  }, [safety.alertLevel, safety.fatigueScore, alarmEnabled, playAlarm, recordFatigueEvent]);
+  }, [realSafety.alertLevel, realSafety.fatigueScore, alarmEnabled, playAlarm, recordFatigueEvent]);
 
   // 组件卸载清理：关闭摄像头/音频，并尝试结束后端驾驶会话
   useEffect(() => {
@@ -238,7 +309,7 @@ export default function DrivingSafety() {
     return { text: '严重疲劳', color: '#ff4757' };
   };
 
-  const fatigueDesc = getFatigueDesc(safety.fatigueScore);
+  const fatigueDesc = getFatigueDesc(realSafety.fatigueScore);
 
   return (
     <div className="animate-fade-in">
@@ -302,10 +373,10 @@ export default function DrivingSafety() {
             {cameraActive && (
               <img
                 ref={videoRef}
-                src={`${CAMERA_SERVER}/video_feed`}
+                src={`${CAMERA_SERVER}/video_feed?mode=safety`}
                 alt="Driver Monitor"
                 className="absolute inset-0 w-full h-full"
-                style={{ objectFit: 'cover', transform: 'scaleX(-1)' }}
+                style={{ objectFit: 'cover' }}
                 onError={() => { setCameraError('无法连接视频流'); setCameraActive(false); }}
               />
             )}
@@ -357,17 +428,17 @@ export default function DrivingSafety() {
                     { pos: 'bottom-0 right-0', borders: ['borderBottom', 'borderRight'] },
                   ].map((corner, i) => {
                     const style = { position: 'absolute' };
-                    corner.borders.forEach(b => { style[b] = `2px solid ${alertColors[safety.alertLevel]}`; });
+                    corner.borders.forEach(b => { style[b] = `2px solid ${alertColors[realSafety.alertLevel]}`; });
                     return <div key={i} className={`absolute ${corner.pos} w-5 h-5`} style={style} />;
                   })}
                   <div className="absolute inset-0" style={{
-                    boxShadow: `0 0 15px ${alertColors[safety.alertLevel]}40, inset 0 0 15px ${alertColors[safety.alertLevel]}10`,
+                    boxShadow: `0 0 15px ${alertColors[realSafety.alertLevel]}40, inset 0 0 15px ${alertColors[realSafety.alertLevel]}10`,
                   }} />
                   {/* 标签 */}
                   <div className="absolute -top-7 left-0 flex items-center gap-1.5 px-2 py-1 rounded-md"
-                    style={{ background: `${alertColors[safety.alertLevel]}E6`, backdropFilter: 'blur(4px)' }}>
+                    style={{ background: `${alertColors[realSafety.alertLevel]}E6`, backdropFilter: 'blur(4px)' }}>
                     <span className="text-xs font-bold" style={{ color: '#0a0e1a' }}>
-                      {fatigueDesc.text} · {safety.fatigueScore}分
+                      {fatigueDesc.text} · {realSafety.fatigueScore}分
                     </span>
                   </div>
                 </div>
@@ -431,7 +502,7 @@ export default function DrivingSafety() {
                 <h3 className="text-sm font-semibold">疲劳评分</h3>
               </div>
               <div className="relative">
-                <GaugeChart value={safety.fatigueScore} max={100} size={150} color="#a78bfa" warning={60} danger={40} />
+                <GaugeChart value={realSafety.fatigueScore} max={100} size={150} color="#a78bfa" warning={60} danger={40} />
               </div>
               <div className="mt-2 text-center">
                 <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ color: fatigueDesc.color, background: `${fatigueDesc.color}15` }}>
@@ -443,25 +514,25 @@ export default function DrivingSafety() {
             {/* 告警等级 */}
             <div className="glass-card p-5 flex flex-col items-center justify-center">
               <div className="flex items-center gap-2 mb-4 w-full">
-                <AlertTriangle size={16} style={{ color: alertColors[safety.alertLevel] }} />
+                <AlertTriangle size={16} style={{ color: alertColors[realSafety.alertLevel] }} />
                 <h3 className="text-sm font-semibold">告警等级</h3>
               </div>
               <div className="w-20 h-20 rounded-full flex items-center justify-center"
                 style={{
-                  background: `${alertColors[safety.alertLevel]}15`,
-                  border: `3px solid ${alertColors[safety.alertLevel]}`,
-                  boxShadow: `0 0 20px ${alertColors[safety.alertLevel]}30`,
+                  background: `${alertColors[realSafety.alertLevel]}15`,
+                  border: `3px solid ${alertColors[realSafety.alertLevel]}`,
+                  boxShadow: `0 0 20px ${alertColors[realSafety.alertLevel]}30`,
                 }}>
-                <span className="text-lg font-bold" style={{ color: alertColors[safety.alertLevel] }}>
-                  {alertLabels[safety.alertLevel]}
+                <span className="text-lg font-bold" style={{ color: alertColors[realSafety.alertLevel] }}>
+                  {alertLabels[realSafety.alertLevel]}
                 </span>
               </div>
               <div className="mt-3 flex gap-2">
                 {['normal', 'warning', 'danger'].map(level => (
                   <span key={level} className="status-dot" style={{
                     background: alertColors[level],
-                    boxShadow: safety.alertLevel === level ? `0 0 8px ${alertColors[level]}` : 'none',
-                    opacity: safety.alertLevel === level ? 1 : 0.3,
+                    boxShadow: realSafety.alertLevel === level ? `0 0 8px ${alertColors[level]}` : 'none',
+                    opacity: realSafety.alertLevel === level ? 1 : 0.3,
                   }} />
                 ))}
               </div>
@@ -474,7 +545,7 @@ export default function DrivingSafety() {
                 <h3 className="text-sm font-semibold">心率监测</h3>
               </div>
               <div className="relative">
-                <GaugeChart value={safety.heartRate} max={150} size={150} color="#ff4757" warning={100} danger={120} unit="BPM" />
+                <GaugeChart value={realSafety.heartRate} max={150} size={150} color="#ff4757" warning={100} danger={120} unit="BPM" />
               </div>
               <div className="mt-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>60-100 BPM 正常</div>
             </div>
@@ -493,14 +564,14 @@ export default function DrivingSafety() {
               <div className="text-center p-3 rounded-xl" style={{ background: 'rgba(0,212,255,0.04)', border: '1px solid rgba(0,212,255,0.1)' }}>
                 <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>眼睑闭合率</div>
                 <div className="text-2xl font-bold font-mono tabular-nums transition-all duration-200"
-                  style={{ color: safety.eyeClosureRate > 0.2 ? '#ff4757' : '#00d4ff' }}>
-                  {(safety.eyeClosureRate * 100).toFixed(1)}<span className="text-sm">%</span>
+                  style={{ color: realSafety.eyeClosureRate > 0.2 ? '#ff4757' : '#00d4ff' }}>
+                  {(realSafety.eyeClosureRate * 100).toFixed(1)}<span className="text-sm">%</span>
                 </div>
                 <div className="mt-2 w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
                   <div className="h-full rounded-full transition-all duration-300"
                     style={{
-                      width: `${Math.min(100, safety.eyeClosureRate * 100 / 0.8 * 100)}%`,
-                      background: safety.eyeClosureRate > 0.2 ? 'linear-gradient(90deg, #ff6348, #ff4757)' : 'linear-gradient(90deg, #00d4ff80, #00d4ff)',
+                      width: `${Math.min(100, realSafety.eyeClosureRate * 100 / 0.8 * 100)}%`,
+                      background: realSafety.eyeClosureRate > 0.2 ? 'linear-gradient(90deg, #ff6348, #ff4757)' : 'linear-gradient(90deg, #00d4ff80, #00d4ff)',
                     }} />
                 </div>
               </div>
@@ -508,42 +579,42 @@ export default function DrivingSafety() {
               <div className="text-center p-3 rounded-xl" style={{ background: 'rgba(0,255,136,0.04)', border: '1px solid rgba(0,255,136,0.1)' }}>
                 <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>哈欠/分钟</div>
                 <div className="text-2xl font-bold font-mono tabular-nums transition-all duration-200"
-                  style={{ color: safety.yawnsPerMin >= 3 ? '#ff4757' : safety.yawnsPerMin >= 1 ? '#ffa502' : '#00ff88' }}>
-                  {safety.yawnsPerMin}<span className="text-sm">次</span>
+                  style={{ color: realSafety.yawnsPerMin >= 3 ? '#ff4757' : realSafety.yawnsPerMin >= 1 ? '#ffa502' : '#00ff88' }}>
+                  {realSafety.yawnsPerMin}<span className="text-sm">次</span>
                 </div>
                 <div className="mt-2 flex justify-center gap-0.5">
                   {[0,1,2,3,4].map(i => (
                     <div key={i} className="w-2 h-4 rounded-sm transition-all duration-300"
                       style={{
-                        background: i < safety.yawnsPerMin ? '#ffa502' : 'rgba(255,255,255,0.06)',
-                        boxShadow: i < safety.yawnsPerMin ? '0 0 4px rgba(255,165,2,0.4)' : 'none',
+                        background: i < realSafety.yawnsPerMin ? '#ffa502' : 'rgba(255,255,255,0.06)',
+                        boxShadow: i < realSafety.yawnsPerMin ? '0 0 4px rgba(255,165,2,0.4)' : 'none',
                       }} />
                   ))}
                 </div>
               </div>
               {/* 视线方向 */}
-              <div className="text-center p-3 rounded-xl" style={{ background: safety.gazeDirection === '前方' ? 'rgba(0,255,136,0.04)' : 'rgba(255,165,2,0.06)', border: `1px solid ${safety.gazeDirection === '前方' ? 'rgba(0,255,136,0.1)' : 'rgba(255,165,2,0.15)'}` }}>
+              <div className="text-center p-3 rounded-xl" style={{ background: realSafety.gazeDirection === '前方' ? 'rgba(0,255,136,0.04)' : 'rgba(255,165,2,0.06)', border: `1px solid ${realSafety.gazeDirection === '前方' ? 'rgba(0,255,136,0.1)' : 'rgba(255,165,2,0.15)'}` }}>
                 <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>视线方向</div>
                 <div className="text-lg font-bold transition-all duration-200"
-                  style={{ color: safety.gazeDirection === '前方' ? '#00ff88' : '#ffa502' }}>
-                  {safety.gazeDirection}
+                  style={{ color: realSafety.gazeDirection === '前方' ? '#00ff88' : '#ffa502' }}>
+                  {realSafety.gazeDirection}
                 </div>
-                <div className="mt-2 text-xs" style={{ color: safety.gazeDirection === '前方' ? '#00ff88' : '#ffa502' }}>
-                  {safety.gazeDirection === '前方' ? '✓ 正常' : '⚠ 偏移'}
+                <div className="mt-2 text-xs" style={{ color: realSafety.gazeDirection === '前方' ? '#00ff88' : '#ffa502' }}>
+                  {realSafety.gazeDirection === '前方' ? '✓ 正常' : '⚠ 偏移'}
                 </div>
               </div>
               {/* 分心时长 */}
               <div className="text-center p-3 rounded-xl" style={{ background: 'rgba(0,212,255,0.04)', border: '1px solid rgba(0,212,255,0.1)' }}>
                 <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>分心时长</div>
                 <div className="text-2xl font-bold font-mono tabular-nums transition-all duration-200"
-                  style={{ color: safety.distractionDuration > 5 ? '#ff4757' : safety.distractionDuration > 2 ? '#ffa502' : '#00d4ff' }}>
-                  {safety.distractionDuration}<span className="text-sm">s</span>
+                  style={{ color: realSafety.distractionDuration > 5 ? '#ff4757' : realSafety.distractionDuration > 2 ? '#ffa502' : '#00d4ff' }}>
+                  {realSafety.distractionDuration}<span className="text-sm">s</span>
                 </div>
                 <div className="mt-2 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
                   <div className="h-full rounded-full transition-all duration-300"
                     style={{
-                      width: `${Math.min(100, safety.distractionDuration / 12 * 100)}%`,
-                      background: safety.distractionDuration > 5 ? '#ff4757' : '#00d4ff',
+                      width: `${Math.min(100, realSafety.distractionDuration / 12 * 100)}%`,
+                      background: realSafety.distractionDuration > 5 ? '#ff4757' : '#00d4ff',
                     }} />
                 </div>
               </div>
@@ -555,10 +626,10 @@ export default function DrivingSafety() {
             <div className="flex items-center gap-2 mb-3">
               <Shield size={16} style={{ color: '#a78bfa' }} />
               <h3 className="text-sm font-semibold">安全日志</h3>
-              <span className="ml-auto text-xs" style={{ color: 'var(--color-text-secondary)' }}>最近 {safety.alerts.length} 条</span>
+              <span className="ml-auto text-xs" style={{ color: 'var(--color-text-secondary)' }}>最近 {realSafety.alerts.length} 条</span>
             </div>
             <div className="space-y-2 overflow-y-auto" style={{ height: 120 }}>
-              {safety.alerts.map((log, i) => (
+              {realSafety.alerts.map((log, i) => (
                 <div key={i} className="flex items-start gap-2 text-xs animate-fade-in">
                   <span className="flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{log.time}</span>
                   <span className="status-dot mt-1 flex-shrink-0" style={{
