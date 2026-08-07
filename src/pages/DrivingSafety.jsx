@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Eye, Activity, Brain, Clock, Camera, Video, VideoOff, RotateCcw, CameraOff, Timer, Volume2, VolumeX } from 'lucide-react';
+import { Shield, AlertTriangle, Eye, Activity, Brain, Camera, Video, RotateCcw, CameraOff, Timer, Volume2, VolumeX, Database } from 'lucide-react';
 import GaugeChart from '../components/GaugeChart';
-import ProgressBar from '../components/ProgressBar';
 import { useVehicle } from '../context/VehicleStore';
+import { api } from '../services/api';
+
+// 相机服务器地址
+const CAMERA_SERVER = 'http://localhost:7861';
 
 // 扫描线效果
 function ScanLine() {
@@ -15,40 +18,43 @@ function ScanLine() {
 }
 
 export default function DrivingSafety() {
-  const { safety, getDrivingDuration, vehicle } = useVehicle();
+  const { safety, getDrivingDuration, vehicle, recordFatigueEvent } = useVehicle();
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState(null);
   const [drivingTime, setDrivingTime] = useState(0);
 
   const videoRef = useRef(null);
-  const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
   const alarmTimerRef = useRef(null);
   const prevAlertLevelRef = useRef('normal');
   const [alarmEnabled, setAlarmEnabled] = useState(true);
   const greetingPlayedRef = useRef(false);
 
+  // 后端驾驶会话 ID（开始驾驶时创建，结束驾驶时关闭）
+  const sessionIdRef = useRef(null);
+  // 后端驾驶统计（加载失败为 null，UI 静默降级）
+  const [drivingStats, setDrivingStats] = useState(null);
+  // 疲劳事件记录节流：上次记录时间，避免同一告警状态频繁上报
+  const lastFatigueEventRef = useRef(0);
+
   const alertColors = { normal: '#00ff88', warning: '#ffa502', danger: '#ff4757' };
   const alertLabels = { normal: '正常', warning: '预警', danger: '危险' };
 
-  // 启动摄像头
+  // 启动摄像头（使用后端 MJPEG 流，避免与 camera_server.py 冲突）
   const startCamera = useCallback(async () => {
     try {
       setCameraError(null);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
       setCameraActive(true);
+
+      // 检查后端相机服务是否在线
+      try {
+        const res = await fetch(`${CAMERA_SERVER}/api/health`, { signal: AbortSignal.timeout(3000) });
+        if (!res.ok) throw new Error('health check failed');
+      } catch {
+        setCameraError('后端相机服务未启动 (localhost:7861)');
+        setCameraActive(false);
+        return;
+      }
 
       // 摄像头启动后自动问候（仅首次）
       if (!greetingPlayedRef.current) {
@@ -71,34 +77,57 @@ export default function DrivingSafety() {
       }
     } catch (err) {
       console.error('摄像头启动失败:', err);
-      let msg = '摄像头访问失败';
-      if (err.name === 'NotAllowedError') msg = '摄像头权限被拒绝';
-      else if (err.name === 'NotFoundError') msg = '未检测到摄像头';
-      else if (err.name === 'NotReadableError') msg = '摄像头被其他程序占用';
-      setCameraError(msg);
+      setCameraError('摄像头访问失败');
       setCameraActive(false);
     }
   }, []);
 
   // 停止摄像头
   const stopCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) videoRef.current.srcObject = null;
     setCameraActive(false);
   }, []);
 
   // 摄像头随驾驶状态自动开关：驾驶开始自动打开，驾驶结束自动关闭
+  // 同时管理后端驾驶会话：开始时 POST /driving/sessions，结束时 PUT /sessions/{id}/end
   useEffect(() => {
     if (vehicle.isDriving) {
       startCamera();
+      // 创建后端驾驶会话（失败静默降级，不影响前端驾驶功能）
+      if (!sessionIdRef.current) {
+        api.createDrivingSession({ distance_km: 0, max_speed: 0, avg_speed: 0 })
+          .then((res) => {
+            if (res && res.id) {
+              sessionIdRef.current = res.id;
+              console.info('[safety] 已创建驾驶会话 #' + res.id);
+            }
+          })
+          .catch(() => { /* 静默降级 */ });
+      }
     } else {
       stopCamera();
+      // 结束后端驾驶会话（失败静默降级）
+      if (sessionIdRef.current) {
+        const sid = sessionIdRef.current;
+        sessionIdRef.current = null;
+        api.endDrivingSession(sid)
+          .then(() => {
+            console.info('[safety] 已结束驾驶会话 #' + sid);
+            // 会话结束后刷新驾驶统计
+            return api.drivingStats();
+          })
+          .then((stats) => { if (stats) setDrivingStats(stats); })
+          .catch(() => { /* 静默降级 */ });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vehicle.isDriving]);
+
+  // 挂载时加载后端驾驶统计（失败静默降级）
+  useEffect(() => {
+    api.drivingStats()
+      .then((stats) => { if (stats) setDrivingStats(stats); })
+      .catch(() => { /* 静默 */ });
+  }, []);
 
   // 疲劳警报声（Web Audio API 生成）
   const playAlarm = useCallback(() => {
@@ -126,7 +155,7 @@ export default function DrivingSafety() {
     } catch (e) { console.warn('警报播放失败:', e); }
   }, [alarmEnabled]);
 
-  // 疲劳告警 + 语音提醒
+  // 疲劳告警 + 语音提醒 + 后端疲劳事件记录
   useEffect(() => {
     const level = safety.alertLevel;
     if (level === 'danger' && alarmEnabled) {
@@ -149,15 +178,39 @@ export default function DrivingSafety() {
         window.speechSynthesis.speak(utter);
       }
     }
-    prevAlertLevelRef.current = level;
-  }, [safety.alertLevel, alarmEnabled, playAlarm]);
 
-  // 组件卸载清理
+    // 记录疲劳事件到后端 POST /api/v1/safety/fatigue/event
+    // 仅在 warning/danger 等级且距上次记录超过 30s 时上报，避免频繁刷库
+    if (level === 'warning' || level === 'danger') {
+      const now = Date.now();
+      if (now - lastFatigueEventRef.current > 30000) {
+        lastFatigueEventRef.current = now;
+        // 后端 level 字段使用中文：轻微/中度/严重
+        const backendLevel = level === 'warning' ? '轻微' : '严重';
+        recordFatigueEvent({
+          score: safety.fatigueScore,
+          level: backendLevel,
+          durationSeconds: 60, // 估算持续 60s
+          actionTaken: level === 'danger' ? '语音+警报提醒' : '语音提醒',
+          sessionId: sessionIdRef.current,
+        });
+      }
+    }
+
+    prevAlertLevelRef.current = level;
+  }, [safety.alertLevel, safety.fatigueScore, alarmEnabled, playAlarm, recordFatigueEvent]);
+
+  // 组件卸载清理：关闭摄像头/音频，并尝试结束后端驾驶会话
   useEffect(() => {
     return () => {
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
       if (audioCtxRef.current) audioCtxRef.current.close();
       if (alarmTimerRef.current) clearTimeout(alarmTimerRef.current);
+      // 卸载时若仍有未结束的驾驶会话，尝试关闭（fire-and-forget）
+      if (sessionIdRef.current) {
+        const sid = sessionIdRef.current;
+        sessionIdRef.current = null;
+        api.endDrivingSession(sid).catch(() => { /* 静默 */ });
+      }
     };
   }, []);
 
@@ -201,6 +254,14 @@ export default function DrivingSafety() {
               驾驶时长 {formatTime(drivingTime)}
             </span>
           </div>
+          {drivingStats && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full" style={{ background: 'rgba(0,255,136,0.06)', border: '1px solid rgba(0,255,136,0.15)' }} title="后端驾驶统计">
+              <Database size={12} style={{ color: '#00ff88' }} />
+              <span className="text-xs font-mono" style={{ color: '#00ff88' }}>
+                {drivingStats.total_sessions} 次 · {drivingStats.total_distance_km} km
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <span className={`status-dot ${cameraActive ? 'online' : 'offline'}`} />
             <span className="text-xs font-medium" style={{ color: cameraActive ? '#00ff88' : 'var(--color-text-secondary)' }}>
@@ -237,11 +298,17 @@ export default function DrivingSafety() {
           </div>
 
           <div className="relative w-full rounded-xl overflow-hidden" style={{ height: 300, background: 'linear-gradient(135deg, #0d1117, #161b22)' }}>
-            {/* 摄像头视频 */}
-            <video ref={videoRef} autoPlay playsInline muted
-              className="absolute inset-0 w-full h-full"
-              style={{ objectFit: 'cover', transform: 'scaleX(-1)', display: cameraActive ? 'block' : 'none' }}
-            />
+            {/* MJPEG 视频流（复用 camera_server，不单独占用摄像头）*/}
+            {cameraActive && (
+              <img
+                ref={videoRef}
+                src={`${CAMERA_SERVER}/video_feed`}
+                alt="Driver Monitor"
+                className="absolute inset-0 w-full h-full"
+                style={{ objectFit: 'cover', transform: 'scaleX(-1)' }}
+                onError={() => { setCameraError('无法连接视频流'); setCameraActive(false); }}
+              />
+            )}
 
             {/* 未开启占位 */}
             {!cameraActive && (

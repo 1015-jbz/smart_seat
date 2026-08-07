@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Smile, Gauge, Settings, MessageCircle, Shield, CloudSun,
-  Search, Cloud, Car, Heart, ThermometerSun, Calendar,
-  Wind, Droplets, Eye, Zap
+  Search, Cloud, Car, Heart, ThermometerSun, Calendar
 } from 'lucide-react';
 import { useVehicle } from '../context/VehicleStore';
 import { emotionData } from '../data/mockData';
@@ -12,7 +11,6 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { vehicle, safety, weather } = useVehicle();
   const [time, setTime] = useState(new Date());
-  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -184,7 +182,7 @@ export default function Dashboard() {
       {/* 模块图标网格 */}
       <div className="w-full max-w-4xl animate-slide-up" style={{ marginTop: 20, animationDelay: '0.2s' }}>
         <div className="grid grid-cols-3 gap-x-16 gap-y-10 justify-items-center">
-          {moduleIcons.map((mod, idx) => {
+          {moduleIcons.map((mod) => {
             const Icon = mod.icon;
             return (
               <div

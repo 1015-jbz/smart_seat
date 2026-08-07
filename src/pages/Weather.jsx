@@ -1,5 +1,5 @@
-import { CloudSun, Sun, Cloud, CloudRain, Droplets, Wind, Gauge, Eye, Thermometer, MapPin, RefreshCw, Loader2 } from 'lucide-react';
-import { useVehicle } from '../context/VehicleStore';
+import { CloudSun, Sun, Cloud, CloudRain, Droplets, Wind, Gauge, Eye, Thermometer, MapPin, RefreshCw, Loader2, AlertTriangle, ChevronDown, Navigation, Wifi, CheckCircle2 } from 'lucide-react';
+import { useVehicle, CITY_COORDS } from '../context/VehicleStore';
 
 const iconMap = {
   sun: Sun,
@@ -8,7 +8,7 @@ const iconMap = {
 };
 
 export default function Weather() {
-  const { weather, location, refreshLocation } = useVehicle();
+  const { weather, location, refreshLocation, setCity } = useVehicle();
 
   const details = [
     { icon: Droplets, label: '湿度', value: `${weather.humidity}%`, color: '#00d4ff' },
@@ -22,9 +22,16 @@ export default function Weather() {
     <div className="animate-fade-in">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold mb-1 section-header" style={{ color: 'var(--color-text-main)' }}>天气信息</h1>
+          <h1 className="text-2xl font-bold mb-1 section-header flex items-center gap-2" style={{ color: 'var(--color-text-main)' }}>
+            天气信息
+            {weather.real && (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-normal" style={{ background: 'rgba(0,255,136,0.1)', color: '#00ff88', border: '1px solid rgba(0,255,136,0.25)' }}>
+                <CheckCircle2 size={10} /> 真实数据
+              </span>
+            )}
+          </h1>
           <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-            实时天气与未来预报 · {location.loading ? '正在定位...' : location.error ? location.error : `当前定位：${location.city}`}
+            实时天气与未来预报 · {location.loading ? '正在定位...' : location.source === 'gps' ? `GPS 定位：${location.city}` : location.source === 'api' ? `网络定位：${location.city}` : location.source === 'ip' ? `网络定位：${location.city}` : location.source === 'manual' ? `已选择：${location.city}` : location.denied ? '定位失败，可手动选择城市' : '定位失败，可手动选择城市'}
           </p>
         </div>
         <button onClick={refreshLocation} disabled={location.loading}
@@ -48,11 +55,49 @@ export default function Weather() {
             <div className="flex items-center gap-2 mb-4">
               <CloudSun size={20} style={{ color: '#38bdf8' }} />
               <span className="text-sm font-semibold">今日天气</span>
-              <span className="ml-auto flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,212,255,0.15)', color: '#00d4ff' }}>
-                <MapPin size={10} />
-                {location.city}
-              </span>
+              <div className="ml-auto relative">
+                <select
+                  value={location.city}
+                  onChange={(e) => setCity(e.target.value)}
+                  disabled={location.loading}
+                  className="appearance-none cursor-pointer pl-6 pr-7 py-1 rounded-full text-xs font-medium transition-all focus:outline-none disabled:opacity-50"
+                  style={{
+                    background: location.located ? 'rgba(0,212,255,0.15)' : 'rgba(255,165,2,0.15)',
+                    color: location.located ? '#00d4ff' : '#ffa502',
+                    border: `1px solid ${location.located ? 'rgba(0,212,255,0.3)' : 'rgba(255,165,2,0.3)'}`,
+                  }}
+                >
+                  {CITY_COORDS.map(c => (
+                    <option key={c.name} value={c.name} style={{ color: '#1e293b', background: '#fff' }}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <MapPin size={10} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: location.located ? '#00d4ff' : '#ffa502', pointerEvents: 'none' }} />
+                <ChevronDown size={10} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', color: location.located ? '#00d4ff' : '#ffa502', pointerEvents: 'none' }} />
+              </div>
             </div>
+
+            {/* 定位失败提示条：明确告知问题与解决方式，避免把兜底北京误当定位结果 */}
+            {!location.loading && !location.located && location.error && (
+              <div className="mb-4 p-3 rounded-xl flex items-start gap-2 animate-fade-in"
+                style={{ background: 'rgba(255,165,2,0.08)', border: '1px solid rgba(255,165,2,0.25)' }}>
+                <AlertTriangle size={15} style={{ color: '#ffa502', flexShrink: 0, marginTop: 1 }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium" style={{ color: '#ffa502' }}>
+                    {location.denied ? '定位权限被拒绝' : '定位失败'}
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
+                    {location.error}
+                  </div>
+                </div>
+                <button onClick={refreshLocation}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all hover:scale-105"
+                  style={{ background: 'rgba(255,165,2,0.15)', color: '#ffa502', border: '1px solid rgba(255,165,2,0.3)' }}>
+                  <RefreshCw size={11} /> 重试
+                </button>
+              </div>
+            )}
             <div className="flex items-center gap-8">
               <div>
                 <div className="text-7xl font-bold gradient-text">{weather.temperature}°</div>

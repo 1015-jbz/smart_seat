@@ -6,6 +6,15 @@ import { useVehicle } from '../context/VehicleStore';
 
 const WAKE_WORD = '小龙';
 
+// 格式化当前时间为 HH:MM
+const nowHHMM = () => {
+  const now = new Date();
+  return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+};
+
+// 快捷指令按钮配置
+const QUICK_COMMANDS = ['小龙', '导航到北京站', '播放流行音乐', '温度调到24度', '打开全部车窗', '明天天气', '打电话给张三'];
+
 // 音频波形
 function AudioVisualizer({ analyser, isActive }) {
   const canvasRef = useRef(null);
@@ -30,7 +39,8 @@ function AudioVisualizer({ analyser, isActive }) {
       let x = 0;
       for (let i = 0; i < buf.length; i++) {
         const y = (buf[i] / 128.0) * canvas.height / 2;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
         x += sw;
       }
       ctx.stroke();
@@ -56,7 +66,6 @@ export default function VoiceAssistant() {
   const [wakeListening, setWakeListening] = useState(false); // 唤醒词监听中
   const [wakeDetected, setWakeDetected] = useState(false); // 刚检测到唤醒词
   const [interimText, setInterimText] = useState(''); // 实时识别中间结果
-  const [micPermission, setMicPermission] = useState('prompt'); // prompt | granted | denied
   const chatEndRef = useRef(null);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -197,12 +206,18 @@ export default function VoiceAssistant() {
 
   // 添加消息并语音回复
   const addAssistantReply = useCallback((userText) => {
-    const now = new Date();
-    const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
     const reply = generateReply(userText);
-    setMessages(prev => [...prev, { role: 'assistant', text: reply, time }]);
+    setMessages(prev => [...prev, { role: 'assistant', text: reply, time: nowHHMM() }]);
     speak(reply);
   }, [speak, generateReply]);
+
+  // 触发唤醒词响应（文字或语音命中唤醒词时共用）
+  const triggerWake = useCallback(() => {
+    setWakeDetected(true);
+    setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time: nowHHMM() }]);
+    speak('我在，请说您的需求。');
+    setTimeout(() => setWakeDetected(false), 2000);
+  }, [speak]);
 
   const handleSend = () => {
     if (!inputText.trim()) return;
@@ -212,19 +227,24 @@ export default function VoiceAssistant() {
 
     // 文字唤醒：输入"小龙"触发唤醒流程
     if (text === '小龙' || text.toLowerCase() === 'xiaolong') {
-      setWakeDetected(true);
-      const now = new Date();
-      const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-      setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time }]);
-      speak('我在，请说您的需求。');
-      setTimeout(() => setWakeDetected(false), 2000);
+      triggerWake();
       return;
     }
 
-    const now = new Date();
-    const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-    setMessages(prev => [...prev, { role: 'user', text, time }]);
+    setMessages(prev => [...prev, { role: 'user', text, time: nowHHMM() }]);
     setTimeout(() => addAssistantReply(text), 500);
+  };
+
+  // 快捷指令：点击即发送，复用 handleSend 的分支逻辑
+  const handleQuickCommand = (cmd) => {
+    setInputText('');
+    setInterimText('');
+    if (cmd === '小龙') {
+      triggerWake();
+      return;
+    }
+    setMessages(prev => [...prev, { role: 'user', text: cmd, time: nowHHMM() }]);
+    setTimeout(() => addAssistantReply(cmd), 500);
   };
 
   const handleClear = () => setMessages([]);
@@ -247,15 +267,13 @@ export default function VoiceAssistant() {
 
   // 处理识别到的请求：关闭麦克风 → 执行请求 → 重新进入唤醒模式
   const processVoiceCommand = useCallback((text) => {
-    const now = new Date();
-    const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
     if (!text) {
       // 无有效内容，直接重新进入唤醒模式
       setTimeout(() => startWakeListeningRef.current?.(), 600);
       return;
     }
     // 显示用户请求
-    setMessages(prev => [...prev, { role: 'user', text, time }]);
+    setMessages(prev => [...prev, { role: 'user', text, time: nowHHMM() }]);
     setInputText('');
     setInterimText('');
     // 执行请求并语音回复
@@ -388,9 +406,7 @@ export default function VoiceAssistant() {
             setTimeout(() => {
               setWakeDetected(false);
               // 添加唤醒提示消息
-              const now = new Date();
-              const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-              setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time }]);
+              setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time: nowHHMM() }]);
               speak('我在，请说您的需求。');
               startRecording();
             }, 800);
@@ -568,8 +584,8 @@ export default function VoiceAssistant() {
 
           {/* 快捷指令按钮 */}
           <div className="mt-3 flex flex-wrap gap-2">
-            {['小龙', '导航到北京站', '播放流行音乐', '温度调到24度', '打开全部车窗', '明天天气', '打电话给张三'].map(cmd => (
-              <button key={cmd} onClick={() => { setInputText(cmd); setTimeout(() => { const now = new Date(); const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`; if (cmd === '小龙') { setWakeDetected(true); setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time }]); speak('我在，请说您的需求。'); setTimeout(() => setWakeDetected(false), 2000); } else { setMessages(prev => [...prev, { role: 'user', text: cmd, time }]); setTimeout(() => addAssistantReply(cmd), 500); } setInputText(''); }, 100); }}
+            {QUICK_COMMANDS.map(cmd => (
+              <button key={cmd} onClick={() => handleQuickCommand(cmd)}
                 className="px-3 py-1.5 rounded-full text-xs transition-all hover:scale-105"
                 style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)', color: 'var(--color-text-secondary)' }}>
                 {cmd}

@@ -1,0 +1,16 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+sqlalchemy>=2.0.0
+pydantic>=2.0.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
+
+# ML dependencies - smart_cockpit emotion recognition (ONNX + OpenCV)
+numpy>=1.24.0
+opencv-python>=4.8.0
+onnxruntime>=1.15.0
+Pillow>=10.0.0
+
+# Camera server - Flask + MediaPipe (emotion & safety detection pipeline)
+flask>=3.0.0
+mediapipe>=0.10.0

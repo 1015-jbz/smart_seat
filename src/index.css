@@ -6,6 +6,14 @@
   --color-accent: #34d399;
   --color-danger: #f87171;
   --color-warning: #fbbf24;
+  /* 数据可视化调色板（与 src/constants/theme.js 的 COLORS 一一对应） */
+  --color-cyan: #00d4ff;
+  --color-neon: #00ff88;
+  --color-amber: #ffa502;
+  --color-red: #ff4757;
+  --color-purple: #a78bfa;
+  --color-pink: #f472b6;
+  --color-sky: #38bdf8;
   --color-bg-light: #f0f4f8;
   --color-card: rgba(255, 255, 255, 0.82);
   --color-card-solid: #ffffff;
@@ -354,6 +362,58 @@ body {
 }
 .clock-colon {
   animation: clockPulse 1s ease-in-out infinite;
+}
+
+/* 滑入动画（消息项、卡片入场） */
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in {
+  animation: slideIn 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* 脉冲发光（录音按钮、激活指示器） */
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 12px rgba(0, 212, 255, 0.4); }
+  50% { box-shadow: 0 0 22px rgba(0, 212, 255, 0.75); }
+}
+.animate-pulse-glow {
+  animation: pulseGlow 1.6s ease-in-out infinite;
+}
+
+/* 渐变文字（天气大温度数字等） */
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-amber), var(--color-red));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* 发光按钮（驾驶开始/停车按钮） */
+.glow-btn {
+  position: relative;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--color-border-glow);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glow-btn:hover {
+  background: rgba(0, 212, 255, 0.08);
+  border-color: rgba(0, 212, 255, 0.3);
+  color: var(--color-text-main);
+}
+.glow-btn.active {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(0, 255, 136, 0.1));
+  border-color: rgba(0, 212, 255, 0.4);
+  color: var(--color-cyan);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.25);
 }
 
 /* ===== Custom Range Slider ===== */

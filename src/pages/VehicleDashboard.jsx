@@ -95,7 +95,7 @@ function MiniGauge({ value, max, label, unit, color, icon: Icon }) {
 }
 
 export default function VehicleDashboard() {
-  const { vehicle, toggleDriving, setDriving } = useVehicle();
+  const { vehicle, setDriving } = useVehicle();
   const [idleSeconds, setIdleSeconds] = useState(0);
 
   useEffect(() => {
