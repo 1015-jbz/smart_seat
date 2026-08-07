@@ -5,16 +5,16 @@
  * - 所有方法失败时返回 null，绝不抛错，方便业务层静默降级
  * - 后端返回的 snake_case 字段在业务方法内归一化为前端 camelCase
  *
- * 后端基址：http://localhost:8000
+ * 后端基址：由 VITE_API_BASE 环境变量配置，默认 http://localhost:8000
  *   - REST 前缀：/api/v1
  *   - 健康检查：/api/health
- *   - WebSocket：ws://localhost:8000/ws/vehicle
+ *   - WebSocket：自动从 HTTP 推导 ws:// 地址
  */
 
-// 后端服务地址（不含尾斜杠）
-const BACKEND_ORIGIN = 'http://localhost:8000';
+// 后端服务地址（不含尾斜杠），支持 VITE_API_BASE 环境变量覆盖
+const BACKEND_ORIGIN = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 const API_BASE = `${BACKEND_ORIGIN}/api/v1`;
-const WS_VEHICLE_URL = `ws://localhost:8000/ws/vehicle`;
+const WS_VEHICLE_URL = BACKEND_ORIGIN.replace(/^http/, 'ws') + '/ws/vehicle';
 
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 5000;

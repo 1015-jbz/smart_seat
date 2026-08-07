@@ -25,10 +25,20 @@ dist-ssr
 
 # Backend (Python / FastAPI)
 .venv
+backend/.venv/
 __pycache__/
 *.py[cod]
+*.db
 backend/data/
 backend/.local_pkgs/
+
+# pip 调试遗留
+pip_stdout.txt
+pip_stderr.txt
+
+# 运行时产物
+.pids/
+logs/
 
 # Environment variables
 .env

@@ -4,8 +4,8 @@ import GaugeChart from '../components/GaugeChart';
 import { useVehicle } from '../context/VehicleStore';
 import { api } from '../services/api';
 
-// 相机服务器地址
-const CAMERA_SERVER = 'http://localhost:7861';
+// 相机服务器地址（支持 VITE_CAMERA_BASE 环境变量）
+const CAMERA_SERVER = import.meta.env.VITE_CAMERA_BASE || 'http://localhost:7861';
 
 // 扫描线效果
 function ScanLine() {

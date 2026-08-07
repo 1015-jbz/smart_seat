@@ -7,14 +7,19 @@
 - 添加 WebSocket 端点 /ws/vehicle（实时推送车辆数据）
 - 添加健康检查 GET /api/health
 """
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import CORS_ORIGINS, CORS_ORIGIN_REGEX, API_V1_PREFIX
 from database import init_db
 from routers import vehicle, safety, weather, location, emotion, driving, chat
+
+logger = logging.getLogger("smart_cabin")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
 @asynccontextmanager
@@ -48,6 +53,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ============ 全局异常处理：避免暴露内部错误细节 ============
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"未处理异常 {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误，请稍后重试"})
 
 # ============ 健康检查（独立于 /api/v1 前缀，挂在 /api 下）============
 @app.get("/api/health", tags=["系统"])
