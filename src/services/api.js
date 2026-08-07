@@ -125,7 +125,7 @@ export const api = {
 
   /** IP 定位代理 GET /location，返回 {city, latitude, longitude, pro, source?} 或 null */
   location: async () => {
-    const data = await apiFetch('/location');
+    const data = await apiFetch('/location', { timeout: 10000 });
     if (!data || data.error) return null;
     return data;
   },

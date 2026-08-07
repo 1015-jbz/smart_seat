@@ -141,91 +141,58 @@ export function VehicleProvider({ children }) {
   });
 
   // 获取车辆当前位置：
-  //   1. 优先后端代理 GET /api/v1/location（解决跨域，国内更稳定）
-  //   2. 后端失败 → 浏览器原生 GPS（精度最高，但国内 Chrome 常失败）
-  //   3. GPS 失败/被拒 → 前端直连 IP 定位（pconline / ipinfo）
+  //   1. 浏览器原生 GPS（精度最高，~10米级）
+  //   2. GPS 失败/超时/被拒 → 后端代理 IP 定位（pconline / ipinfo，城市级精度）
+  //   3. 后端也失败 → 前端直连 IP 定位（备选方案）
   //   4. 全部失败 → 提示手动选择
   const refreshLocation = useCallback(() => {
     setLocation(prev => ({ ...prev, loading: true, error: null, denied: false, manual: false }));
 
-    // 优先后端 IP 定位代理
-    api.location()
-      .then((data) => {
-        if (data && data.city) {
-          // 后端代理可能只返回了 city 而没给经纬度，
-          // 这里再按 city 名查一遍前端 CITY_COORDS，确保一定有 lat/lon。
-          let { latitude, longitude } = data;
-          if (latitude == null || longitude == null) {
-            const found = CITY_COORDS.find(
-              c => data.city.includes(c.name) || c.name.includes(data.city)
-            );
-            if (found) {
-              latitude = found.lat;
-              longitude = found.lon;
-            }
-          }
-          // 必须同时有 city + 经纬度 才算真的成功，否则不接受，让前端走 fallback
-          if (latitude != null && longitude != null) {
-            setLocation({
-              city: data.city,
-              latitude,
-              longitude,
-              located: true,
-              loading: false,
-              error: null,
-              denied: false,
-              source: 'api',
-              manual: false,
-            });
-            return true;
-          }
-          console.warn('[location] 后端返回了 city 但没有有效经纬度，拒绝接受，走 fallback:', data);
-        }
-        return false;
-      })
-      .catch(() => false)
-      .then((ok) => {
-        if (ok) return;
-        // 后端失败，降级到原有逻辑（GPS → IP 直连）
-        runFrontendLocation();
-      });
-  }, []);
-
-  // 前端原生定位 + IP 直连 fallback（保留原有逻辑，作为后端代理失败时的降级方案）
-  const runFrontendLocation = useCallback(() => {
-    // 原生 GPS 定位不可用，直接走 IP 定位
-    if (!navigator.geolocation) {
-      locateByIP().then((result) => {
-        if (result) {
-          setLocation({ ...result, located: true, loading: false, error: null, denied: false, source: 'ip', manual: false });
-        } else {
-          setLocation(prev => ({ ...prev, loading: false, located: false, error: '定位失败，请手动选择城市', denied: false }));
-        }
-      });
-      return;
+    // 优先浏览器 GPS（高精度）
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          const city = findNearestCity(latitude, longitude);
+          setLocation({ city, latitude, longitude, located: true, loading: false, error: null, denied: false, source: 'gps', manual: false });
+        },
+        (gpsError) => {
+          // GPS 失败 → 降级到后端 IP 定位
+          console.warn('[location] GPS 定位失败:', gpsError?.message || gpsError);
+          fallbackToIP(gpsError);
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+      );
+    } else {
+      fallbackToIP(null);
     }
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        // 原生定位成功（精度最高）
-        const { latitude, longitude } = position.coords;
-        const city = findNearestCity(latitude, longitude);
-        setLocation({ city, latitude, longitude, located: true, loading: false, error: null, denied: false, source: 'gps', manual: false });
-      },
-      async (error) => {
-        // 原生定位失败（国内 Chrome 常见：权限拒绝 / Google 服务超时），自动 fallback 到 IP 定位
-        const ipResult = await locateByIP();
-        if (ipResult) {
-          setLocation({ ...ipResult, located: true, loading: false, error: null, denied: false, source: 'ip', manual: false });
-        } else {
-          // IP 定位也失败，提示用户手动选择
-          let msg = '定位失败，请手动选择城市';
-          if (error.code === 1) msg = '定位权限被拒绝且网络定位不可用，请手动选择城市';
-          setLocation(prev => ({ ...prev, loading: false, located: false, error: msg, denied: error.code === 1 }));
+    async function fallbackToIP(gpsError) {
+      // 方案 A: 后端 IP 定位代理（增加超时到 10s）
+      try {
+        const data = await api.location();
+        if (data && data.city && data.latitude != null && data.longitude != null) {
+          setLocation({
+            city: data.city,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            located: true, loading: false, error: null, denied: false,
+            source: 'ip', manual: false,
+          });
+          return;
         }
-      },
-      { enableHighAccuracy: false, timeout: 5000, maximumAge: 300000 }
-    );
+      } catch (_) { /* 后端不可用，继续 */ }
+
+      // 方案 B: 前端直连 IP 定位
+      const ipResult = await locateByIP();
+      if (ipResult) {
+        setLocation({ ...ipResult, located: true, loading: false, error: null, denied: false, source: 'ip', manual: false });
+      } else {
+        let msg = '定位失败，请手动选择城市';
+        if (gpsError?.code === 1) msg = '定位权限被拒绝，请手动选择城市';
+        setLocation(prev => ({ ...prev, loading: false, located: false, error: msg, denied: gpsError?.code === 1 }));
+      }
+    }
   }, []);
 
   // 应用启动时自动获取一次位置
