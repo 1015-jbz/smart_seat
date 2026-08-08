@@ -303,9 +303,9 @@ export default function DrivingSafety() {
 
   // 疲劳等级描述
   const getFatigueDesc = (score) => {
-    if (score < 25) return { text: '状态良好', color: '#00ff88' };
-    if (score < 45) return { text: '轻度疲劳', color: '#ffa502' };
-    if (score < 70) return { text: '中度疲劳', color: '#ff6348' };
+    if (score < 30) return { text: '状态良好', color: '#00ff88' };
+    if (score < 50) return { text: '轻度疲劳', color: '#ffa502' };
+    if (score < 75) return { text: '中度疲劳', color: '#ff6348' };
     return { text: '严重疲劳', color: '#ff4757' };
   };
 
@@ -502,7 +502,7 @@ export default function DrivingSafety() {
                 <h3 className="text-sm font-semibold">疲劳评分</h3>
               </div>
               <div className="relative">
-                <GaugeChart value={realSafety.fatigueScore} max={100} size={150} color="#a78bfa" warning={25} danger={45} />
+                <GaugeChart value={realSafety.fatigueScore} max={100} size={150} color="#a78bfa" warning={30} danger={50} />
               </div>
               <div className="mt-2 text-center">
                 <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ color: fatigueDesc.color, background: `${fatigueDesc.color}15` }}>

@@ -352,11 +352,11 @@ def _detect_gaze(landmarks, w, h):
     nose = landmarks[1]
     chin = landmarks[152]
     nose_x = nose.x * w; nose_y = nose.y * h; chin_y = chin.y * h
-    head_down = (chin_y - nose_y) / h > 0.22
+    head_down = (chin_y - nose_y) / h > 0.35
     nose_offset = (nose_x - w/2) / w
     if head_down: return "down", True
-    elif nose_offset > 0.18: return "right", True
-    elif nose_offset < -0.18: return "left", True
+    elif nose_offset > 0.32: return "right", True
+    elif nose_offset < -0.32: return "left", True
     else: return "forward", False
 
 def _run_safety_check(landmarks, w, h):
@@ -366,7 +366,7 @@ def _run_safety_check(landmarks, w, h):
     ear = _compute_ear(landmarks, w, h)
     is_eye_closed = ear < 0.2
     _eye_closure_history.append(is_eye_closed)
-    if len(_eye_closure_history) > 150:
+    if len(_eye_closure_history) > 60:
         _eye_closure_history.pop(0)
     perclos = sum(_eye_closure_history) / max(len(_eye_closure_history), 1)
 
@@ -389,27 +389,27 @@ def _run_safety_check(landmarks, w, h):
     # 疲劳评分：PERCLOS 为主，哈欠/低头/分心为辅
     fatigue_score = 0.0
 
-    # PERCLOS 梯度计分（15% 起评，避免正常眨眼完全0分）
-    if perclos > 0.15:
-        fatigue_score += min(45, perclos * 100)  # 20%→20, 30%→30, 45%+→45
+    # PERCLOS 梯度计分（20% 起评，曲线平缓，加速恢复）
+    if perclos > 0.20:
+        fatigue_score += min(45, (perclos - 0.20) * 150)  # 25%→7.5, 35%→22.5, 50%+→45
     else:
-        fatigue_score += perclos * 60  # 10%→6, 15%→9
+        fatigue_score += perclos * 25  # 10%→2.5, 20%→5
 
-    # 哈欠: 2次/分钟起评
-    if yawn_count >= 2:
-        fatigue_score += min(20, yawn_count * 5)  # 2→10, 4→20
+    # 哈欠: 3次/分钟起评
+    if yawn_count >= 3:
+        fatigue_score += min(20, yawn_count * 5)  # 3→15, 4→20
 
-    # 低头 + 眼睑下垂
-    if gaze == "down" and perclos > 0.2:
+    # 低头 + 眼睑下垂（双重条件，减少误报）
+    if gaze == "down" and perclos > 0.30:
         fatigue_score += 10
 
-    # 分心 > 3s
-    if distraction_dur > 3.0:
-        fatigue_score += min(15, (distraction_dur - 3) * 5)
+    # 分心 > 8s（大幅放宽）
+    if distraction_dur > 8.0:
+        fatigue_score += min(15, (distraction_dur - 8) * 3)
 
-    if fatigue_score >= 70: alert_level = "critical"
-    elif fatigue_score >= 45: alert_level = "high"
-    elif fatigue_score >= 25: alert_level = "warning"
+    if fatigue_score >= 75: alert_level = "critical"
+    elif fatigue_score >= 50: alert_level = "high"
+    elif fatigue_score >= 30: alert_level = "warning"
     else: alert_level = "normal"
 
     with _safety_lock:
@@ -507,7 +507,7 @@ def _detector_loop():
                     _no_face_count = 0
                 else:
                     _no_face_count += 1
-                    if _no_face_count >= 15:
+                    if _no_face_count >= 8:
                         with _safety_lock:
                             _cached_safety.update({
                                 "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
