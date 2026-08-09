@@ -1,15 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Smile, Gauge, Settings, MessageCircle, Shield, CloudSun,
-  Search, Cloud, Car, Heart, ThermometerSun, Calendar
+  Cloud, Car, Heart, ThermometerSun, MessageCircle, User, Bot
 } from 'lucide-react';
 import { useVehicle } from '../context/VehicleStore';
-import { emotionData } from '../data/mockData';
+import { useVoice } from '../context/VoiceStore';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const { vehicle, safety, weather } = useVehicle();
+  const { messages } = useVoice();
   const [time, setTime] = useState(new Date());
 
   useEffect(() => {
@@ -25,61 +25,6 @@ export default function Dashboard() {
     weekday: 'long',
   });
 
-  // 模块图标配置
-  const moduleIcons = [
-    {
-      icon: Smile,
-      title: '表情识别',
-      path: '/emotion',
-      color: '#a78bfa',
-      bg: 'linear-gradient(135deg, #c4b5fd, #a78bfa)',
-      status: emotionData.faceDetected ? '检测中' : '离线',
-    },
-    {
-      icon: Gauge,
-      title: '车辆仪表',
-      path: '/vehicle',
-      color: '#3b82f6',
-      bg: 'linear-gradient(135deg, #60a5fa, #3b82f6)',
-      status: vehicle.isDriving ? '行驶中' : '已停车',
-    },
-    {
-      icon: Settings,
-      title: '座舱控制',
-      path: '/cabin',
-      color: '#10b981',
-      bg: 'linear-gradient(135deg, #34d399, #10b981)',
-      status: '正常',
-    },
-    {
-      icon: MessageCircle,
-      title: '语音助手',
-      path: '/voice',
-      color: '#f472b6',
-      bg: 'linear-gradient(135deg, #f9a8d4, #f472b6)',
-      status: '在线',
-    },
-    {
-      icon: Shield,
-      title: '安全监控',
-      path: '/safety',
-      color: safety.alertLevel === 'normal' ? '#10b981' : '#f59e0b',
-      bg: safety.alertLevel === 'normal'
-        ? 'linear-gradient(135deg, #34d399, #10b981)'
-        : 'linear-gradient(135deg, #fbbf24, #f59e0b)',
-      status: safety.alertLevel === 'normal' ? '安全' : '注意',
-    },
-    {
-      icon: CloudSun,
-      title: '天气信息',
-      path: '/weather',
-      color: '#0ea5e9',
-      bg: 'linear-gradient(135deg, #38bdf8, #0ea5e9)',
-      status: '已更新',
-    },
-  ];
-
-  // 快捷状态卡片
   const quickWidgets = [
     {
       icon: Cloud,
@@ -117,10 +62,12 @@ export default function Dashboard() {
     },
   ];
 
+  const recentMessages = messages.filter(m => m.role !== 'system' && m.source !== 'alert').slice(-3);
+
   return (
     <div className="animate-fade-in flex flex-col items-center" style={{ minHeight: 'calc(100vh - 60px)' }}>
       {/* 大时钟区域 */}
-      <div className="flex flex-col items-center animate-slide-up" style={{ marginTop: 48, marginBottom: 48 }}>
+      <div className="flex flex-col items-center animate-slide-up" style={{ marginTop: 48, marginBottom: 32 }}>
         <div className="flex items-baseline gap-1">
           <span className="font-light tracking-tight" style={{
             fontSize: 'clamp(64px, 10vw, 96px)',
@@ -152,7 +99,7 @@ export default function Dashboard() {
       </div>
 
       {/* 快捷状态卡片行 */}
-      <div className="w-full max-w-4xl grid grid-cols-4 gap-4 animate-slide-up" style={{ marginBottom: 56, animationDelay: '0.15s' }}>
+      <div className="w-full max-w-4xl grid grid-cols-4 gap-4 animate-slide-up" style={{ marginBottom: 32, animationDelay: '0.15s' }}>
         {quickWidgets.map((widget, i) => {
           const Icon = widget.icon;
           return (
@@ -179,24 +126,62 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* 模块图标网格 */}
-      <div className="w-full max-w-4xl animate-slide-up" style={{ marginTop: 20, animationDelay: '0.2s' }}>
-        <div className="grid grid-cols-3 gap-x-16 gap-y-10 justify-items-center">
-          {moduleIcons.map((mod) => {
-            const Icon = mod.icon;
-            return (
-              <div
-                key={mod.title}
-                className="module-icon"
-                onClick={() => navigate(mod.path)}
-              >
-                <div className="icon-box" style={{ background: mod.bg }}>
-                  <Icon size={24} color="#fff" strokeWidth={2} />
+      {/* 最近语音对话卡片 */}
+      <div className="w-full max-w-4xl animate-slide-up" style={{ animationDelay: '0.2s' }}>
+        <div className="glass-card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <MessageCircle size={18} style={{ color: '#00d4ff' }} />
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-main)' }}>最近对话</h3>
+            </div>
+            <button
+              onClick={() => navigate('/voice')}
+              className="text-xs px-3 py-1 rounded-full transition-all"
+              style={{ background: 'rgba(0,212,255,0.1)', color: '#00d4ff', border: '1px solid rgba(0,212,255,0.2)' }}
+            >
+              查看全部
+            </button>
+          </div>
+          {recentMessages.length === 0 ? (
+            <div className="text-center py-4 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+              暂无对话记录
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {recentMessages.map((msg, i) => (
+                <div key={i} className={`flex gap-2 text-xs ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                  <div className="flex gap-2 items-center max-w-full">
+                    {msg.role !== 'user' && (
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                        style={{ background: 'rgba(244,114,182,0.15)' }}>
+                        <Bot size={10} style={{ color: '#f472b6' }} />
+                      </div>
+                    )}
+                    <div
+                      className="px-3 py-1.5 rounded-lg max-w-[80%] truncate"
+                      style={{
+                        background: msg.role === 'user'
+                          ? 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,255,136,0.1))'
+                          : 'rgba(255,255,255,0.05)',
+                        border: `1px solid ${msg.role === 'user' ? 'rgba(0,212,255,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                        color: 'var(--color-text-main)',
+                      }}
+                      title={msg.text}
+                    >
+                      {msg.text}
+                    </div>
+                    {msg.role === 'user' && (
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                        style={{ background: 'rgba(0,212,255,0.15)' }}>
+                        <User size={10} style={{ color: '#00d4ff' }} />
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--color-text-muted)' }}>{msg.time}</span>
                 </div>
-                <span className="icon-label">{mod.title}</span>
-              </div>
-            );
-          })}
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

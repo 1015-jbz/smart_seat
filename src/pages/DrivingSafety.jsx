@@ -18,20 +18,13 @@ function ScanLine() {
 }
 
 export default function DrivingSafety() {
-  const { safety, getDrivingDuration, vehicle, recordFatigueEvent } = useVehicle();
-  const [cameraActive, setCameraActive] = useState(false);
+  const { safety, camSafety, cameraActive, getDrivingDuration, vehicle, recordFatigueEvent } = useVehicle();
   const [cameraError, setCameraError] = useState(null);
   const [drivingTime, setDrivingTime] = useState(0);
 
   const videoRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const alarmTimerRef = useRef(null);
-  const prevAlertLevelRef = useRef('normal');
   const [alarmEnabled, setAlarmEnabled] = useState(true);
-  const greetingPlayedRef = useRef(false);
-
-  // 从相机后端 /api/state 拉取的实时安全数据（替代模拟数据）
-  const [cameraSafety, setCameraSafety] = useState(null);
 
   // 后端驾驶会话 ID（开始驾驶时创建，结束驾驶时关闭）
   const sessionIdRef = useRef(null);
@@ -43,59 +36,32 @@ export default function DrivingSafety() {
   const alertColors = { normal: '#00ff88', warning: '#ffa502', danger: '#ff4757' };
   const alertLabels = { normal: '正常', warning: '预警', danger: '危险' };
 
-  // 启动摄像头（使用后端 MJPEG 流，避免与 camera_server.py 冲突）
+  // 启动摄像头（使用后端 MJPEG 流，不单独占用摄像头，不出声）
   const startCamera = useCallback(async () => {
     try {
       setCameraError(null);
-      setCameraActive(true);
-
       // 检查后端相机服务是否在线
       try {
         const res = await fetch(`${CAMERA_SERVER}/api/health`, { signal: AbortSignal.timeout(3000) });
         if (!res.ok) throw new Error('health check failed');
       } catch {
         setCameraError('后端相机服务未启动 (localhost:7861)');
-        setCameraActive(false);
         return;
-      }
-
-      // 摄像头启动后自动问候（仅首次）
-      if (!greetingPlayedRef.current) {
-        const now = new Date();
-        const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
-        const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
-        const hour = now.getHours();
-        let greet = hour < 6 ? '凌晨好' : hour < 12 ? '上午好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
-        const greeting = `${greet}！今天是${dateStr}。当前天气晴朗，气温28度。欢迎您驾驶，祝您一路平安。`;
-        if (window.speechSynthesis) {
-          const utter = new SpeechSynthesisUtterance(greeting);
-          utter.lang = 'zh-CN';
-          utter.rate = 1;
-          const voices = window.speechSynthesis.getVoices();
-          const zhVoice = voices.find(v => v.lang.includes('zh'));
-          if (zhVoice) utter.voice = zhVoice;
-          window.speechSynthesis.speak(utter);
-        }
-        greetingPlayedRef.current = true;
       }
     } catch (err) {
       console.error('摄像头启动失败:', err);
       setCameraError('摄像头访问失败');
-      setCameraActive(false);
     }
   }, []);
 
   // 停止摄像头
   const stopCamera = useCallback(() => {
-    setCameraActive(false);
   }, []);
 
-  // 摄像头随驾驶状态自动开关：驾驶开始自动打开，驾驶结束自动关闭
-  // 同时管理后端驾驶会话：开始时 POST /driving/sessions，结束时 PUT /sessions/{id}/end
+  // 驾驶状态自动管理 + 后端驾驶会话
   useEffect(() => {
     if (vehicle.isDriving) {
       startCamera();
-      // 创建后端驾驶会话（失败静默降级，不影响前端驾驶功能）
       if (!sessionIdRef.current) {
         api.createDrivingSession({ distance_km: 0, max_speed: 0, avg_speed: 0 })
           .then((res) => {
@@ -108,14 +74,12 @@ export default function DrivingSafety() {
       }
     } else {
       stopCamera();
-      // 结束后端驾驶会话（失败静默降级）
       if (sessionIdRef.current) {
         const sid = sessionIdRef.current;
         sessionIdRef.current = null;
         api.endDrivingSession(sid)
           .then(() => {
             console.info('[safety] 已结束驾驶会话 #' + sid);
-            // 会话结束后刷新驾驶统计
             return api.drivingStats();
           })
           .then((stats) => { if (stats) setDrivingStats(stats); })
@@ -132,73 +96,20 @@ export default function DrivingSafety() {
       .catch(() => { /* 静默 */ });
   }, []);
 
-  // 轮询相机后端 /api/state 获取实时安全检测数据
-  useEffect(() => {
-    if (!cameraActive) return;
-    let active = true;
-    const poll = async () => {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch(`${CAMERA_SERVER}/api/state`, { signal: controller.signal });
-        clearTimeout(timer);
-        if (!res.ok || !active) return;
-        const data = await res.json();
-        if (data.safety) setCameraSafety(data.safety);
-      } catch (_) { /* 静默降级 */ }
-    };
-    poll();
-    const interval = setInterval(poll, 500);
-    return () => { active = false; clearInterval(interval); };
-  }, [cameraActive]);
-
-  // 合并实时相机数据与 VehicleStore 模拟数据（相机优先）
+  // 合并 VehicleStore 的相机数据与模拟数据（相机优先）
   // 归一化告警等级: camera(正常/警告/高危/危险) ↔ UI(正常/预警/危险)
   const _levelMap = { normal: 'normal', warning: 'warning', high: 'danger', critical: 'danger' };
   const realSafety = {
-    fatigueScore: cameraSafety?.fatigue_score ?? safety.fatigueScore,
-    alertLevel: _levelMap[cameraSafety?.alert_level] ?? safety.alertLevel,
-    eyeClosureRate: cameraSafety?.perclos ?? safety.eyeClosureRate,
-    yawnsPerMin: cameraSafety?.yawn_count ?? safety.yawnsPerMin,
-    gazeDirection: cameraSafety?.gaze === 'forward' ? '前方' : cameraSafety?.gaze === 'down' ? '下方' : cameraSafety?.gaze === 'left' ? '左偏' : cameraSafety?.gaze === 'right' ? '右偏' : safety.gazeDirection,
-    distractionDuration: cameraSafety?.distraction_dur ?? safety.distractionDuration,
-    heartRate: safety.heartRate,  // 心率仅 VehicleStore 提供
+    fatigueScore: camSafety?.fatigue_score ?? safety.fatigueScore,
+    alertLevel: _levelMap[camSafety?.alert_level] ?? safety.alertLevel,
+    eyeClosureRate: camSafety?.perclos ?? safety.eyeClosureRate,
+    yawnsPerMin: camSafety?.yawn_count ?? safety.yawnsPerMin,
+    gazeDirection: camSafety?.gaze === 'forward' ? '前方' : camSafety?.gaze === 'down' ? '下方' : camSafety?.gaze === 'left' ? '左偏' : camSafety?.gaze === 'right' ? '右偏' : safety.gazeDirection,
+    distractionDuration: camSafety?.distraction_dur ?? safety.distractionDuration,
+    heartRate: safety.heartRate,
     alerts: safety.alerts,
-    eyeClosed: cameraSafety?.eye_closed ?? false,
+    eyeClosed: camSafety?.eye_closed ?? false,
   };
-
-  // 实时相机语音提醒：分心/闭眼超过阈值
-  const lastCameraSpeakRef = useRef(0);
-  useEffect(() => {
-    if (!cameraSafety || !alarmEnabled) return;
-    const now = Date.now();
-    if (now - lastCameraSpeakRef.current < 10000) return; // 10s 间隔
-    const { distraction_dur, eye_closed, alert_message } = cameraSafety;
-    if (alert_message && alert_message.length > 0) {
-      // 疲劳告警消息优先
-      if (window.speechSynthesis) {
-        const utter = new SpeechSynthesisUtterance(alert_message);
-        utter.lang = 'zh-CN'; utter.rate = 1.1;
-        window.speechSynthesis.speak(utter);
-        lastCameraSpeakRef.current = now;
-      }
-    } else if (distraction_dur > 3.0) {
-      if (window.speechSynthesis) {
-        const utter = new SpeechSynthesisUtterance('请注意前方路况，不要分心驾驶。');
-        utter.lang = 'zh-CN'; utter.rate = 1.1;
-        window.speechSynthesis.speak(utter);
-        lastCameraSpeakRef.current = now;
-      }
-    } else if (eye_closed) {
-      // 闭眼超过阈值时提醒（由后端 PERCLOS 判断）
-      if (window.speechSynthesis) {
-        const utter = new SpeechSynthesisUtterance('请保持注意力集中，注意行车安全。');
-        utter.lang = 'zh-CN'; utter.rate = 1.1;
-        window.speechSynthesis.speak(utter);
-        lastCameraSpeakRef.current = now;
-      }
-    }
-  }, [cameraSafety, alarmEnabled]);
 
   // 疲劳警报声（Web Audio API 生成）
   const playAlarm = useCallback(() => {
@@ -226,56 +137,35 @@ export default function DrivingSafety() {
     } catch (e) { console.warn('警报播放失败:', e); }
   }, [alarmEnabled]);
 
-  // 疲劳告警 + 语音提醒 + 后端疲劳事件记录
+  // 疲劳告警：仅蜂鸣声（非语音）+ 后端疲劳事件记录
+  // 语音提醒统一走 VehicleStore → VoiceStore 全局管线，避免多声音重叠
   useEffect(() => {
     const level = realSafety.alertLevel;
     if (level === 'danger' && alarmEnabled) {
       playAlarm();
-      // 语音提醒（每10秒一次，避免频繁）
-      if (!alarmTimerRef.current) {
-        if (window.speechSynthesis) {
-          const utter = new SpeechSynthesisUtterance('警告！您已处于疲劳状态，请注意安全，建议立即休息。');
-          utter.lang = 'zh-CN';
-          utter.rate = 1.1;
-          window.speechSynthesis.speak(utter);
-        }
-        alarmTimerRef.current = setTimeout(() => { alarmTimerRef.current = null; }, 10000);
-      }
-    } else if (level === 'warning' && alarmEnabled) {
-      // 预警时只语音提醒，不播放警报声
-      if (prevAlertLevelRef.current === 'normal' && window.speechSynthesis) {
-        const utter = new SpeechSynthesisUtterance('您有些疲劳了，请注意休息。');
-        utter.lang = 'zh-CN';
-        window.speechSynthesis.speak(utter);
-      }
     }
 
     // 记录疲劳事件到后端 POST /api/v1/safety/fatigue/event
-    // 仅在 warning/danger 等级且距上次记录超过 30s 时上报，避免频繁刷库
     if (level === 'warning' || level === 'danger') {
       const now = Date.now();
       if (now - lastFatigueEventRef.current > 30000) {
         lastFatigueEventRef.current = now;
-        // 后端 level 字段使用中文：轻微/中度/严重
         const backendLevel = level === 'warning' ? '轻微' : '严重';
         recordFatigueEvent({
           score: realSafety.fatigueScore,
           level: backendLevel,
-          durationSeconds: 60, // 估算持续 60s
-          actionTaken: level === 'danger' ? '语音+警报提醒' : '语音提醒',
+          durationSeconds: 60,
+          actionTaken: level === 'danger' ? '蜂鸣+语音提醒' : '语音提醒',
           sessionId: sessionIdRef.current,
         });
       }
     }
-
-    prevAlertLevelRef.current = level;
   }, [realSafety.alertLevel, realSafety.fatigueScore, alarmEnabled, playAlarm, recordFatigueEvent]);
 
-  // 组件卸载清理：关闭摄像头/音频，并尝试结束后端驾驶会话
+  // 组件卸载清理：关闭音频 + 尝试结束后端驾驶会话
   useEffect(() => {
     return () => {
       if (audioCtxRef.current) audioCtxRef.current.close();
-      if (alarmTimerRef.current) clearTimeout(alarmTimerRef.current);
       // 卸载时若仍有未结束的驾驶会话，尝试关闭（fire-and-forget）
       if (sessionIdRef.current) {
         const sid = sessionIdRef.current;

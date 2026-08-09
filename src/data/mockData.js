@@ -62,7 +62,7 @@ export const voiceSettings = {
 };
 
 export const safetyData = {
-  fatigueScore: 92,
+  fatigueScore: 8,
   alertLevel: 'normal',
   eyeClosureRate: 0.03,
   yawnsPerMin: 0,

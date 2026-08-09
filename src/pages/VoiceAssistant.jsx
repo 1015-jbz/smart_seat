@@ -1,22 +1,18 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Bell, Loader2 } from 'lucide-react';
-import { voiceMessages, voiceSettings } from '../data/mockData';
+import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Loader2 } from 'lucide-react';
+import { voiceSettings } from '../data/mockData';
 import { useVehicle } from '../context/VehicleStore';
+import { useVoice } from '../context/VoiceStore';
 import { api } from '../services/api';
 
-const WAKE_WORD = '小龙';
-
-// 格式化当前时间为 HH:MM
 const nowHHMM = () => {
   const now = new Date();
   return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 };
 
-// 快捷指令按钮配置
 const QUICK_COMMANDS = ['小龙', '导航到北京站', '播放流行音乐', '温度调到24度', '打开全部车窗', '明天天气', '打电话给张三'];
 
-// 音频波形
 function AudioVisualizer({ analyser, isActive }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
@@ -56,29 +52,30 @@ function AudioVisualizer({ analyser, isActive }) {
 export default function VoiceAssistant() {
   const { username } = useOutletContext();
   const { location } = useVehicle();
-  const [messages, setMessages] = useState(voiceMessages);
+  // voicePhase / audioLevel 从全局 VoiceStore 读取 → RecordingBar 在右侧栏全局展示
+  const {
+    messages, pushMessage, clearMessages, enqueueSpeech,
+    voicePhase, setVoicePhase, audioLevel, setAudioLevel,
+  } = useVoice();
+
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [settings, setSettings] = useState(voiceSettings);
   const [micError, setMicError] = useState(null);
-  const [audioLevel, setAudioLevel] = useState(0);
   const [recordingTime, setRecordingTime] = useState(0);
   const [speechSupported, setSpeechSupported] = useState(false);
-  const [wakeListening, setWakeListening] = useState(false);
-  const [wakeDetected, setWakeDetected] = useState(false);
   const [interimText, setInterimText] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+
   const chatEndRef = useRef(null);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
   const analyserRef = useRef(null);
   const recognitionRef = useRef(null);
-  const wakeRecognitionRef = useRef(null);
   const levelTimerRef = useRef(null);
   const recTimerRef = useRef(null);
-  const startWakeListeningRef = useRef(null);
   const processedRef = useRef(false);
 
-  // 检测语音识别支持
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     setSpeechSupported(!!SR);
@@ -94,41 +91,20 @@ export default function VoiceAssistant() {
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
       if (audioCtxRef.current) audioCtxRef.current.close();
       if (recognitionRef.current) try { recognitionRef.current.abort(); } catch(e) {}
-      if (wakeRecognitionRef.current) try { wakeRecognitionRef.current.abort(); } catch(e) {}
       if (levelTimerRef.current) clearInterval(levelTimerRef.current);
       if (recTimerRef.current) clearInterval(recTimerRef.current);
     };
   }, []);
 
-  // TTS 语音回复 — 返回 Promise，播完 resolve（防止麦克风回收 TTS 音频）
-  const speak = useCallback((text) => {
-    return new Promise((resolve) => {
-      if (!window.speechSynthesis) { resolve(); return; }
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = 'zh-CN';
-      utter.rate = 1 + settings.speedOffset * 0.1;
-      utter.pitch = 1 + settings.pitchOffset * 0.1;
-      const voices = window.speechSynthesis.getVoices();
-      const zhVoice = voices.find(v => v.lang.includes('zh'));
-      if (zhVoice) utter.voice = zhVoice;
-      utter.onend = () => resolve();
-      utter.onerror = () => resolve();
-      window.speechSynthesis.speak(utter);
-    });
-  }, [settings.speedOffset, settings.pitchOffset]);
-
-  // 本地规则引擎 — 确定性车控指令（瞬时响应，不耗 token）
+  // ===== 本地命令识别（与全局 RightPanel 保持一致）=====
   const localCommand = useCallback((text) => {
     const lower = text.toLowerCase();
-    // 车窗
     if (lower.includes('开窗') || lower.includes('打开窗')) {
       if (lower.includes('全部') || lower.includes('所有')) return '好的，已为您打开全部车窗。';
       if (lower.includes('主驾') || lower.includes('驾驶')) return '好的，已为您打开驾驶员侧车窗。';
       return '好的，已为您打开驾驶员侧车窗。';
     }
     if (lower.includes('关窗') || lower.includes('关闭窗')) return '好的，已为您关闭全部车窗。';
-    // 空调
     if (lower.includes('温度') || lower.includes('空调')) {
       const tempMatch = text.match(/(\d+)度/);
       if (tempMatch) return `已将空调温度设置为${tempMatch[1]}度。`;
@@ -142,24 +118,18 @@ export default function VoiceAssistant() {
       if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
       return '风量已调至中档。';
     }
-    // 音乐
     if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
     if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首。';
     if (lower.includes('音量') && lower.includes('大')) return '音量已调高。';
     if (lower.includes('音量') && lower.includes('小')) return '音量已调低。';
-    // 电话
     if (lower.includes('接听')) return '已为您接通来电。';
     if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
     return null;
   }, []);
 
-  const [aiLoading, setAiLoading] = useState(false);
-
-  // 智能回复 — 本地指令优先，其余走 DeepSeek
   const generateReply = useCallback(async (text) => {
     const local = localCommand(text);
     if (local) return { reply: local, source: 'local' };
-
     setAiLoading(true);
     try {
       const ctx = { city: location.city };
@@ -167,52 +137,16 @@ export default function VoiceAssistant() {
       if (res && res.reply) return { reply: res.reply, source: res.source };
     } catch (_) {}
     finally { setAiLoading(false); }
-
     return { reply: '抱歉，AI 服务暂时不可用，请稍后再试。', source: 'fallback' };
   }, [location.city, localCommand]);
 
-  // 添加消息并语音回复 — 等 TTS 播完再 resolve
   const addAssistantReply = useCallback(async (userText) => {
     const { reply } = await generateReply(userText);
-    setMessages(prev => [...prev, { role: 'assistant', text: reply, time: nowHHMM() }]);
-    await speak(reply);
-  }, [speak, generateReply]);
+    pushMessage('assistant', reply, 'tts');
+    await enqueueSpeech(reply, 'normal');
+  }, [generateReply, pushMessage, enqueueSpeech]);
 
-  // 触发唤醒词响应
-  const triggerWake = useCallback(() => {
-    setWakeDetected(true);
-    setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time: nowHHMM() }]);
-    speak('我在，请说您的需求。');
-    setTimeout(() => setWakeDetected(false), 2000);
-  }, [speak]);
-
-  const handleSend = () => {
-    if (!inputText.trim()) return;
-    const text = inputText.trim();
-    setInputText('');
-    setInterimText('');
-
-    if (text === '小龙' || text.toLowerCase() === 'xiaolong') {
-      triggerWake();
-      return;
-    }
-
-    setMessages(prev => [...prev, { role: 'user', text, time: nowHHMM() }]);
-    setTimeout(() => addAssistantReply(text), 500);
-  };
-
-  // 快捷指令
-  const handleQuickCommand = (cmd) => {
-    setInputText('');
-    setInterimText('');
-    if (cmd === '小龙') { triggerWake(); return; }
-    setMessages(prev => [...prev, { role: 'user', text: cmd, time: nowHHMM() }]);
-    setTimeout(() => addAssistantReply(cmd), 500);
-  };
-
-  const handleClear = () => setMessages([]);
-
-  // 停止麦克风硬件
+  // ===== 停止麦克风硬件（手动模式专用，注意同步全局 setAudioLevel）=====
   const stopMicHardware = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
@@ -226,40 +160,33 @@ export default function VoiceAssistant() {
     setIsRecording(false);
     setAudioLevel(0);
     setRecordingTime(0);
-  }, []);
+  }, [setAudioLevel]);
 
-  // 处理识别到的请求 — 等 TTS 播完再恢复唤醒监听（防止回收）
+  // ===== 手动录音识别结果处理（同步全局 voicePhase）=====
   const processVoiceCommand = useCallback((text) => {
+    setVoicePhase('processing');
     if (!text) {
-      setTimeout(() => startWakeListeningRef.current?.(), 600);
+      setTimeout(() => { setVoicePhase('idle'); }, 600);
       return;
     }
-    setMessages(prev => [...prev, { role: 'user', text, time: nowHHMM() }]);
+    pushMessage('user', text, 'voice');
     setInputText('');
     setInterimText('');
     setTimeout(async () => {
       await addAssistantReply(text);
-      // TTS 播完后稍等再恢复唤醒
-      setTimeout(() => startWakeListeningRef.current?.(), 800);
+      setTimeout(() => { setVoicePhase('idle'); }, 800);
     }, 400);
-  }, [addAssistantReply]);
+  }, [addAssistantReply, pushMessage, setVoicePhase]);
 
-  // 启动麦克风 + 语音识别
+  // ===== 手动开始录音（点击麦克风按钮）=====
   const startRecording = useCallback(async () => {
     try {
       setMicError(null);
       processedRef.current = false;
-      if (wakeRecognitionRef.current) {
-        try { wakeRecognitionRef.current.abort(); } catch(e) {}
-        wakeRecognitionRef.current = null;
-        setWakeListening(false);
-      }
-
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
-
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       audioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
@@ -267,7 +194,6 @@ export default function VoiceAssistant() {
       analyser.fftSize = 2048;
       source.connect(analyser);
       analyserRef.current = analyser;
-
       const dataArr = new Uint8Array(analyser.frequencyBinCount);
       levelTimerRef.current = setInterval(() => {
         analyser.getByteTimeDomainData(dataArr);
@@ -275,17 +201,14 @@ export default function VoiceAssistant() {
         for (let i = 0; i < dataArr.length; i++) { const v = (dataArr[i] - 128) / 128; sum += v * v; }
         setAudioLevel(Math.min(1, Math.sqrt(sum / dataArr.length) * 3));
       }, 100);
-
       setRecordingTime(0);
       recTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
-
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
         const recognition = new SR();
         recognition.lang = 'zh-CN';
         recognition.continuous = true;
         recognition.interimResults = true;
-
         recognition.onresult = (event) => {
           let interim = '';
           let final = '';
@@ -313,8 +236,8 @@ export default function VoiceAssistant() {
         try { recognition.start(); } catch(e) {}
         recognitionRef.current = recognition;
       }
-
       setIsRecording(true);
+      setVoicePhase('listening');
     } catch (err) {
       console.error('麦克风启动失败:', err);
       let msg = '麦克风访问失败';
@@ -322,77 +245,53 @@ export default function VoiceAssistant() {
       else if (err.name === 'NotFoundError') msg = '未检测到麦克风';
       else if (err.name === 'NotReadableError') msg = '麦克风被其他程序占用';
       setMicError(msg);
+      setVoicePhase('idle');
     }
-  }, [stopMicHardware, processVoiceCommand]);
+  }, [stopMicHardware, processVoiceCommand, setAudioLevel, setVoicePhase]);
 
-  // 手动停止录音
+  // ===== 触发唤醒（手动场景：用户在输入框输入「小龙」或点快捷指令）=====
+  const triggerWake = useCallback(async () => {
+    setVoicePhase('tts');
+    pushMessage('assistant', '我在，请说您的需求。', 'tts');
+    await enqueueSpeech('我在，请说您的需求。', 'greeting');
+    setVoicePhase('listening');
+    startRecording();
+  }, [pushMessage, enqueueSpeech, setVoicePhase, startRecording]);
+
   const stopRecording = useCallback(() => {
     processedRef.current = true;
     stopMicHardware();
     setInputText('');
     setInterimText('');
-    setTimeout(() => startWakeListeningRef.current?.(), 500);
   }, [stopMicHardware]);
 
-  // ===== 唤醒词监听 =====
-  const startWakeListening = useCallback(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
-    if (wakeRecognitionRef.current || isRecording) return;
-
-    try {
-      const wakeRec = new SR();
-      wakeRec.lang = 'zh-CN';
-      wakeRec.continuous = true;
-      wakeRec.interimResults = true;
-
-      wakeRec.onresult = (event) => {
-        for (let i = 0; i < event.results.length; i++) {
-          const text = event.results[i][0].transcript.toLowerCase();
-          if (text.includes(WAKE_WORD.toLowerCase())) {
-            setWakeDetected(true);
-            try { wakeRec.abort(); } catch(e) {}
-            wakeRecognitionRef.current = null;
-            setWakeListening(false);
-            // 等 TTS 播完再开录音，防止回收
-            setTimeout(async () => {
-              setWakeDetected(false);
-              setMessages(prev => [...prev, { role: 'assistant', text: '我在，请说您的需求。', time: nowHHMM() }]);
-              await speak('我在，请说您的需求。');
-              startRecording();
-            }, 800);
-            break;
-          }
-        }
-      };
-      wakeRec.onerror = (e) => {
-        if (e.error !== 'no-speech' && e.error !== 'aborted') {
-          console.warn('唤醒监听错误:', e.error);
-        }
-      };
-      wakeRec.onend = () => {
-        if (wakeRecognitionRef.current === wakeRec && !isRecording) {
-          try { wakeRec.start(); } catch(e) {}
-        }
-      };
-      try { wakeRec.start(); } catch(e) {}
-      wakeRecognitionRef.current = wakeRec;
-      setWakeListening(true);
-    } catch (e) {
-      console.warn('启动唤醒监听失败:', e);
+  const handleSend = () => {
+    if (!inputText.trim()) return;
+    const text = inputText.trim();
+    setInputText('');
+    setInterimText('');
+    if (text === '小龙' || text.toLowerCase() === 'xiaolong') {
+      triggerWake();
+      return;
     }
-  }, [isRecording, startRecording, speak]);
+    pushMessage('user', text, 'text');
+    setTimeout(() => addAssistantReply(text), 500);
+  };
 
-  // 同步唤醒监听函数到 ref
-  useEffect(() => {
-    startWakeListeningRef.current = startWakeListening;
-  }, [startWakeListening]);
+  const handleQuickCommand = (cmd) => {
+    setInputText('');
+    setInterimText('');
+    if (cmd === '小龙') { triggerWake(); return; }
+    pushMessage('user', cmd, 'voice');
+    setTimeout(() => addAssistantReply(cmd), 500);
+  };
 
-  const enableWakeWord = useCallback(() => {
-    startWakeListening();
-  }, [startWakeListening]);
+  const handleClear = () => clearMessages();
 
   const formatRecTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
+
+  // 全局右栏 RecordingBar 使用 voicePhase 判断当前阶段。本页只在手动录音时显示详细面板。
+  // 注意：voicePhase 同时会被全局唤醒录音修改。
 
   return (
     <div className="animate-fade-in">
@@ -400,21 +299,30 @@ export default function VoiceAssistant() {
         <div>
           <h1 className="text-2xl font-bold mb-1 section-header" style={{ color: 'var(--color-text-main)' }}>智能语音对话</h1>
           <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-            语音 / 文字双模态交互 · 唤醒词「<span style={{ color: '#00d4ff', fontWeight: 600 }}>小龙</span>」
+            语音 / 文字双模态交互 · 全局唤醒词「<span style={{ color: '#00d4ff', fontWeight: 600 }}>小龙</span>」
           </p>
         </div>
+        {/* 交互阶段指示（小标签） */}
         <div className="flex items-center gap-3">
-          {wakeListening && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full animate-pulse"
-              style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)' }}>
-              <Bell size={13} style={{ color: '#00d4ff' }} />
-              <span className="text-xs font-medium" style={{ color: '#00d4ff' }}>等待唤醒</span>
+          {voicePhase === 'tts' && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full"
+              style={{ background: 'rgba(120,120,120,0.08)', border: '1px solid rgba(120,120,120,0.2)' }}>
+              <Volume2 size={13} style={{ color: '#888' }} />
+              <span className="text-xs font-medium" style={{ color: '#888' }}>小龙回复中</span>
             </div>
           )}
-          {wakeDetected && (
+          {voicePhase === 'listening' && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full animate-pulse"
+              style={{ background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)' }}>
+              <Mic size={13} style={{ color: '#34d399' }} />
+              <span className="text-xs font-medium" style={{ color: '#34d399' }}>聆听中</span>
+            </div>
+          )}
+          {voicePhase === 'processing' && (
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full"
-              style={{ background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.3)' }}>
-              <span className="text-xs font-bold" style={{ color: '#34d399' }}>已唤醒!</span>
+              style={{ background: 'rgba(79,140,255,0.12)', border: '1px solid rgba(79,140,255,0.3)' }}>
+              <Loader2 size={13} style={{ color: '#4f8cff' }} className="animate-spin" />
+              <span className="text-xs font-medium" style={{ color: '#4f8cff' }}>识别处理中</span>
             </div>
           )}
         </div>
@@ -468,7 +376,7 @@ export default function VoiceAssistant() {
             <div ref={chatEndRef} />
           </div>
 
-          {/* 录音面板 */}
+          {/* 手动录音详细面板（仅本页麦克风按钮触发时显示） */}
           {isRecording && (
             <div className="mb-3 p-3 rounded-xl animate-fade-in" style={{
               background: 'rgba(255,71,87,0.06)', border: '1px solid rgba(255,71,87,0.2)',
@@ -552,26 +460,18 @@ export default function VoiceAssistant() {
           {/* 唤醒词 */}
           <div className="mb-5 p-3 rounded-xl" style={{ background: 'rgba(0,212,255,0.06)', border: '1px solid rgba(0,212,255,0.15)' }}>
             <div className="flex items-center gap-2 mb-2">
-              <Bell size={14} style={{ color: '#00d4ff' }} />
-              <span className="text-xs font-semibold" style={{ color: 'var(--color-text-main)' }}>唤醒词</span>
+              <Volume2 size={14} style={{ color: '#00d4ff' }} />
+              <span className="text-xs font-semibold" style={{ color: 'var(--color-text-main)' }}>全局唤醒词</span>
             </div>
             <div className="text-2xl font-bold text-center py-2" style={{ color: '#00d4ff' }}>小龙</div>
             <div className="text-xs text-center mb-2" style={{ color: 'var(--color-text-secondary)' }}>
-              {wakeListening ? '正在监听唤醒词...' : wakeDetected ? '已唤醒!' : '点击下方按钮启用语音唤醒'}
+              任意页面直接说「<span style={{ color: '#00d4ff', fontWeight: 600 }}>小龙</span>」即可唤起对话
             </div>
-            {!wakeListening && (
-              <button onClick={enableWakeWord}
-                className="w-full py-2 rounded-lg text-xs font-medium transition-all"
-                style={{ background: 'rgba(0,212,255,0.15)', border: '1px solid rgba(0,212,255,0.3)', color: '#00d4ff' }}>
-                启用唤醒词监听
-              </button>
-            )}
-            {wakeListening && (
-              <div className="flex items-center justify-center gap-1.5 py-1.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-[#00d4ff] animate-pulse" />
-                <span className="text-xs" style={{ color: '#00d4ff' }}>监听中</span>
-              </div>
-            )}
+            <div className="flex items-center justify-center gap-1.5 py-1.5"
+                 style={{ background: 'rgba(0,212,255,0.04)', borderRadius: 8 }}>
+              <div className="w-1.5 h-1.5 rounded-full bg-[#00d4ff] animate-pulse" />
+              <span className="text-xs" style={{ color: '#00d4ff' }}>右栏全局监听中</span>
+            </div>
           </div>
 
           {/* 语音角色 */}
@@ -617,7 +517,7 @@ export default function VoiceAssistant() {
             </div>
           </div>
 
-          {/* 麦克风状态 */}
+          {/* 设备状态 */}
           <div className="mb-5 p-3 rounded-xl" style={{ background: 'rgba(0,212,255,0.04)', border: '1px solid rgba(0,212,255,0.1)' }}>
             <div className="flex items-center gap-2 mb-2">
               <Volume2 size={14} style={{ color: '#00d4ff' }} />
@@ -633,8 +533,8 @@ export default function VoiceAssistant() {
                 <span className="text-xs" style={{ color: speechSupported ? '#00ff88' : '#ffa502' }}>{speechSupported ? '支持' : '不支持'}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>唤醒监听</span>
-                <span className="text-xs" style={{ color: wakeListening ? '#00ff88' : 'var(--color-text-muted)' }}>{wakeListening ? '监听中' : '未启动'}</span>
+                <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>全局唤醒</span>
+                <span className="text-xs" style={{ color: '#00ff88' }}>右栏监听中</span>
               </div>
             </div>
           </div>

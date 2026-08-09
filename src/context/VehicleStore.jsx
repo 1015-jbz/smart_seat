@@ -3,6 +3,8 @@ import { vehicleData as initVehicle, safetyData as initSafety, weatherData as in
 import { fetchWeatherByCoords, isWeatherConfigured } from '../services/weatherApi';
 import { api, createVehicleWebSocket } from '../services/api';
 
+const CAMERA_SERVER = import.meta.env.VITE_CAMERA_BASE || 'http://localhost:7861';
+
 const VehicleContext = createContext();
 
 // 城市坐标库（与后端 weather_proxy.py CITY_COORDS 保持一致）
@@ -120,8 +122,31 @@ export function VehicleProvider({ children }) {
   const [vehicle, setVehicle] = useState({ ...initVehicle });
   const [safety, setSafety] = useState({ ...initSafety, alerts: [...initSafety.alerts] });
   const [weather, setWeather] = useState({ ...initWeather, forecast: [...initWeather.forecast] });
-  const drivingDurationRef = useRef(0); // 累计驾驶秒数
-  const pausedRef = useRef(false); // 页面后台时暂停定时任务
+  const drivingDurationRef = useRef(0);
+  const pausedRef = useRef(false);
+
+  const [cameraActive, setCameraActive] = useState(false);
+  const [camEmotion, setCamEmotion] = useState(null);
+  const [camSafety, setCamSafety] = useState(null);
+
+  // 语音告警回调：疲劳告警时由外部注册，VehicleStore 触发
+  const voiceAlertRef = useRef(null);
+  const prevAlertLevelRef = useRef('normal');
+
+  // 人脸问候回调：首次检测到人脸时触发（整个 session 只一次）
+  const onGreetingRef = useRef(null);
+  const faceWasDetectedRef = useRef(false);
+  const greetingDoneRef = useRef(false);
+
+  // 疲劳告警循环管理
+  const alertTimerRef = useRef(null);
+  const currentAlertLevelRef = useRef('normal');
+  const ALERT_SPEECH = {
+    warning:  '请集中注意力，认真驾驶。',
+    high:     '您有些疲劳了，请注意休息。',
+    critical: '危险！您已严重疲劳，请立即停车休息。',
+  };
+  const levelText = { warning: '轻度疲劳', high: '中度疲劳', critical: '严重疲劳' };
 
   // WebSocket 相关引用
   const wsClientRef = useRef(null); // WebSocket 客户端实例
@@ -131,6 +156,37 @@ export function VehicleProvider({ children }) {
   // 后端调用频率受限，1.2s 间隔太密集，这里缓存最近一次结果供 safety 定时器使用
   const backendFatigueRef = useRef(null);
   const lastFatigueFetchRef = useRef(0); // 上次发起后端疲劳评分请求的时间戳
+
+  // 摄像头实时安全数据缓存（从 camera_server /api/state 拉取）
+  const camSafetyRef = useRef(null);
+
+  // ===== v2 疲劳算法：前端 EWMA + Sustain Gate =====
+  // 与后端 camera_server.py 共用同一套阈值表（_HYSTERESIS / SUSTAIN_REQUIRED）
+  const smoothedFatigueRef = useRef(5);      // EWMA 平滑后的疲劳分
+  const sustainTimerRef = useRef({ warning: 0, high: 0, critical: 0 });  // 持续时长累积器
+  const lastHystTargetRef = useRef('normal');  // 上次滞回判定结果
+  const SUSTAIN_REQUIRED = { warning: 2.4, high: 1.8, critical: 0.6 };    // 比后端略长（前端 1.2s 间隔）
+  // 统一滞回阈值表（与后端 _HYSTERESIS 完全一致，防临界抖动带宽拉满）
+  const HYSTERESIS = {
+    up:   { warning: 30, high: 55, critical: 80 },
+    down: { normal: 8,  warning: 35, high: 55 },
+  };
+  // 根据分数判定目标等级（滞回判定，不含 sustain gate）
+  const determineLevel = (score, currentLevel = 'normal') => {
+    const levels = ['normal', 'warning', 'high', 'critical'];
+    const idx = levels.indexOf(currentLevel);
+    // 升级
+    if (idx < 3) {
+      const upTarget = levels[idx + 1];
+      if (score >= HYSTERESIS.up[upTarget]) return upTarget;
+    }
+    // 降级
+    if (idx > 0) {
+      const downTarget = levels[idx - 1];
+      if (score <= HYSTERESIS.down[downTarget]) return downTarget;
+    }
+    return currentLevel;
+  };
 
   // 车辆当前位置（全局共享，天气与导航共用）
   // source: 'gps' | 'ip' | 'manual' — 区分定位来源，UI 可展示精度差异
@@ -365,9 +421,55 @@ export function VehicleProvider({ children }) {
     };
   }, []);
 
+  // ===== 摄像头实时数据轮询 =====
+  useEffect(() => {
+    let active = true;
+    let lastPushTs = 0;  // driving_minutes 推送节流（每 10s 一次）
+    const poll = async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(`${CAMERA_SERVER}/api/state`, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok || !active) { setCameraActive(false); return; }
+        const data = await res.json();
+        if (data.safety) {
+          camSafetyRef.current = { ...data.safety, _ts: Date.now() };
+          setCamSafety(data.safety);
+        }
+        if (data.emotion) setCamEmotion({ label: data.emotion.label || data.emotion, confidence: data.emotion.confidence ?? null });
+        setCameraActive(true);
+
+        // v2：每 10s 向后端推送驾驶时长（参与疲劳评分 10% 权重）
+        const nowMs = Date.now();
+        if (nowMs - lastPushTs > 10000) {
+          lastPushTs = nowMs;
+          const minutes = drivingDurationRef.current / 60;
+          fetch(`${CAMERA_SERVER}/api/v1/safety/driving_minutes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ driving_minutes: minutes }),
+          }).catch(() => { /* 静默：camera_server 可能未启动 */ });
+        }
+
+        // ===== 人脸检测 → 首次检测到时触发问候（整个 session 只一次）=====
+        const hasFace = (data.confidence != null && data.confidence > 0) ||
+                         (data.emotion && data.emotion !== 'neutral' && data.emotion !== 'None');
+        const faceJustDetected = hasFace && !faceWasDetectedRef.current;
+        if (faceJustDetected && !greetingDoneRef.current) {
+          greetingDoneRef.current = true;
+          onGreetingRef.current?.();
+        }
+        faceWasDetectedRef.current = hasFace;
+      } catch (_) { setCameraActive(false); }
+    };
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => { active = false; clearInterval(interval); };
+  }, []);
+
   // 模拟安全数据实时变化 — 基于真实驾驶时长与摄像头检测
-  // 疲劳评分优先后端 GET /api/v1/safety/fatigue（每 5s 拉一次，缓存供 1.2s 定时器使用）
-  // 后端失败时 fallback 到前端本地计算（保留原有逻辑）
+  // 疲劳评分优先摄像头实时数据 → 后端 API → 前端本地计算
   useEffect(() => {
     const interval = setInterval(() => {
       if (pausedRef.current) return;
@@ -394,73 +496,128 @@ export function VehicleProvider({ children }) {
           .catch(() => { backendFatigueRef.current = null; });
       }
 
-      // ===== 1. 驾驶时长影响（线性递减）=====
+      // ===== 1. 驾驶时长影响（高分=疲劳，与摄像头方向一致）=====
+      // v2 曲线：2h 起评，与后端驾驶时长 10% 权重对齐
       let timeBasedFatigue;
       if (!isDriving || minutes < 1) {
-        timeBasedFatigue = 95; // 刚启动或停车时状态良好
+        timeBasedFatigue = 5; // 刚启动或停车时状态良好
       } else if (minutes <= 30) {
-        // 0-30分钟：轻微下降 95→85
-        timeBasedFatigue = 95 - (minutes / 30) * 10;
+        timeBasedFatigue = 5 + (minutes / 30) * 10;        // 5→15
       } else if (minutes <= 60) {
-        // 30-60分钟：中度下降 85→70
-        timeBasedFatigue = 85 - ((minutes - 30) / 30) * 15;
+        timeBasedFatigue = 15 + ((minutes - 30) / 30) * 15; // 15→30
       } else if (minutes <= 120) {
-        // 1-2小时：明显下降 70→50
-        timeBasedFatigue = 70 - ((minutes - 60) / 60) * 20;
+        timeBasedFatigue = 30 + ((minutes - 60) / 60) * 20; // 30→50
       } else {
-        // 2小时以上：严重疲劳 50→25
-        timeBasedFatigue = Math.max(25, 50 - ((minutes - 120) / 60) * 25);
+        timeBasedFatigue = Math.min(75, 50 + ((minutes - 120) / 60) * 25); // 50→75
       }
 
-      // ===== 2. 摄像头面部识别指标（模拟真实检测）=====
+      // ===== 2. 面部识别指标模拟（疲劳分越高，指标越差）=====
       // 眨眼频率（正常0.1-0.2次/秒，疲劳时增加到0.4+）
       const blinkRate = isDriving ?
-        Math.min(0.6, 0.12 + (1 - timeBasedFatigue / 100) * 0.35 + (Math.random() - 0.5) * 0.05) : 0.1;
+        Math.min(0.6, 0.12 + (timeBasedFatigue / 100) * 0.35 + (Math.random() - 0.5) * 0.05) : 0.1;
 
       // 闭眼时长占比（正常<5%，疲劳时可达30%+）
       const eyeClosureRatio = isDriving ?
-        Math.min(0.45, 0.03 + (1 - timeBasedFatigue / 100) * 0.32 + (Math.random() - 0.5) * 0.04) : 0.02;
+        Math.min(0.45, 0.03 + (timeBasedFatigue / 100) * 0.32 + (Math.random() - 0.5) * 0.04) : 0.02;
 
       // 打哈欠次数/分钟（正常0-1次，疲劳时3-8次）
       const yawnFreq = isDriving ?
-        Math.min(8, (1 - timeBasedFatigue / 100) * 6 + (Math.random() - 0.5) * 1) : 0;
+        Math.min(8, (timeBasedFatigue / 100) * 6 + (Math.random() - 0.5) * 1) : 0;
 
-      // 视线偏移检测（前方/仪表盘/后视镜/侧方/偏离）
-      const gazeStates = ['前方', '前方', '前方', '前方', '仪表盘', '左后视镜', '右后视镜'];
-      const fatigueGazeStates = ['前方', '仪表盘', '左侧', '右侧', '偏离', '偏离'];
-      const gazePool = timeBasedFatigue > 70 ? gazeStates : fatigueGazeStates;
+      // v2 视线池调整：正常驾驶视线占多数（配合后端三态分类）
+      const normalGazeStates = ['前方', '前方', '前方', '前方', '前方', '仪表盘', '左后视镜', '右后视镜'];
+      const fatigueGazeStates = ['前方', '前方', '仪表盘', '左侧', '右侧', '偏离', '偏离'];
+      const gazePool = timeBasedFatigue > 50 ? fatigueGazeStates : normalGazeStates;
       const gazeDirection = gazePool[Math.floor(Math.random() * gazePool.length)];
 
-      // 分心时长（秒）
+      // 分心时长（秒）— 短暂偏头不触发，仅持续偏移才计
       const distractionTime = gazeDirection === '前方' ?
-        Math.floor(Math.random() * 2) :
-        Math.floor(Math.random() * 8 + 3);
+        0 : Math.max(0, Math.floor(Math.random() * 6 - 2));
 
-      // ===== 3. 综合疲劳评分 =====
-      // 优先使用后端评分（10s 内有效）；否则用前端本地计算（时长70% + 面部30%）
-      const backend = backendFatigueRef.current;
-      const backendFresh = backend && (nowMs - backend.fetchedAt < 10000);
-      let fatigueScore;
-      if (backendFresh) {
-        // 后端评分仅基于时长/夜间/连续驾驶；前端再叠加面部指标微调（10% 权重）
-        const facialFatigue = Math.round(
-          100 - (eyeClosureRatio * 100 * 0.4 + yawnFreq * 8 * 0.3 + (gazeDirection !== '前方' ? 15 : 0) * 0.3)
-        );
-        fatigueScore = Math.round(backend.score * 0.9 + Math.max(20, facialFatigue) * 0.1);
+      // ===== 3. 综合疲劳评分 (0-100, 越高越疲劳) =====
+      const cam = camSafetyRef.current;
+      const camFresh = cam && (nowMs - (cam._ts || 0) < 4000);
+      let rawScore, alertLevel;
+
+      if (camFresh) {
+        // --- 摄像头实时数据（后端已做 EWMA + Sustain Gate）---
+        rawScore = cam.fatigue_score;
+        alertLevel = cam.alert_level;
       } else {
-        // 后端不可用：原有前端计算逻辑
+        // --- 摄像头不可用：前端模拟 ---
+        // v2 面部疲劳：区分"非驾驶视线"和"非前方但正常"
+        const isFatigueGaze = !['前方', '仪表盘', '左后视镜', '右后视镜'].includes(gazeDirection);
         const facialFatigue = Math.round(
-          100 - (eyeClosureRatio * 100 * 0.4 + yawnFreq * 8 * 0.3 + (gazeDirection !== '前方' ? 15 : 0) * 0.3)
+          eyeClosureRatio * 100 * 0.45 +      // 闭眼权重提升
+          yawnFreq * 8 * 0.35 +               // 哈欠权重提升
+          (isFatigueGaze ? 12 : 0) * 0.2       // 只对真正的疲劳视线计分
         );
-        fatigueScore = Math.round(timeBasedFatigue * 0.7 + Math.max(20, facialFatigue) * 0.3);
+        rawScore = timeBasedFatigue * 0.6 + facialFatigue * 0.4;
+
+        // v2 前端 EWMA 平滑（模仿摄像头行为）
+        const alpha = rawScore > smoothedFatigueRef.current ? 0.35 : 0.15;
+        smoothedFatigueRef.current = alpha * rawScore + (1 - alpha) * smoothedFatigueRef.current;
+
+        // v2 前端 Sustain Gate + 统一滞回阈值表
+        const LEVELS = ['normal', 'warning', 'high', 'critical'];
+        const target = determineLevel(smoothedFatigueRef.current, prevAlertLevelRef.current);
+        if (target !== prevAlertLevelRef.current) {
+          if (LEVELS.indexOf(target) > LEVELS.indexOf(prevAlertLevelRef.current)) {
+            // 升级方向：连续判定同 target → 累积；target 变化 → 初始化新计时器
+            if (target === lastHystTargetRef.current) {
+              sustainTimerRef.current[target] = (sustainTimerRef.current[target] || 0) + 1.2;
+            } else {
+              if (lastHystTargetRef.current !== 'normal') sustainTimerRef.current[lastHystTargetRef.current] = 0;
+              sustainTimerRef.current[target] = 1.2;
+            }
+            lastHystTargetRef.current = target;
+            if (sustainTimerRef.current[target] >= SUSTAIN_REQUIRED[target]) {
+              alertLevel = target;
+              sustainTimerRef.current = { warning: 0, high: 0, critical: 0 };
+            } else {
+              alertLevel = prevAlertLevelRef.current;  // 继续等
+            }
+          } else {
+            // 降级：立刻生效
+            alertLevel = target;
+            sustainTimerRef.current = { warning: 0, high: 0, critical: 0 };
+            lastHystTargetRef.current = target;
+          }
+        } else {
+          // 同等级：如果上次判定要升级但现在回落 → 清零那次的计时器
+          if (lastHystTargetRef.current !== prevAlertLevelRef.current &&
+              LEVELS.indexOf(lastHystTargetRef.current) > LEVELS.indexOf(prevAlertLevelRef.current)) {
+            sustainTimerRef.current[lastHystTargetRef.current] = 0;
+          }
+          lastHystTargetRef.current = prevAlertLevelRef.current;
+          alertLevel = prevAlertLevelRef.current;
+        }
       }
+      const fatigueScore = Math.round(camFresh ? rawScore : smoothedFatigueRef.current);
 
-      // ===== 4. 告警等级判断 =====
-      const alertLevel = fatigueScore >= 75 ? 'normal' : fatigueScore >= 50 ? 'warning' : 'danger';
+      // ===== 4. 告警循环启停（VehicleStore 掌握节奏）=====
+      // 阈值: warning 30-49 / high 50-74 / critical ≥75（critical 暂不处理硬件刹车）
+      if (alertLevel !== prevAlertLevelRef.current) {
+        if (alertLevel === 'warning') {
+          startAlertLoop('warning');  // 5s 一次
+        } else if (alertLevel === 'high') {
+          startAlertLoop('high');     // 5s 一次
+        } else if (alertLevel === 'normal') {
+          stopAlertLoop();            // 等级恢复 → 停止告警
+        }
+        // warning/high 变化时再写一次文字记录（NotifyPanel 看到）
+        if (alertLevel === 'warning' || alertLevel === 'high') {
+          const detail = `疲劳预警：检测到${levelText[alertLevel]}！当前疲劳评分 ${fatigueScore} 分，建议${alertLevel === 'critical' ? '立即停车休息' : '谨慎驾驶'}`;
+          // 文字记录：通过 voiceAlertRef 桥接，RightPanel 里 pushAlert 会写
+          // 这里仍调 voiceAlertRef 只是为了写日志（opts.loop=true 也会跳冷却）
+          voiceAlertRef.current?.(detail, alertLevel, { logOnly: true, loop: false });
+        }
+      }
+      prevAlertLevelRef.current = alertLevel;
 
-      // ===== 5. 心率（随疲劳上升）=====
+      // ===== 4. 心率（随疲劳上升，疲劳分越高心率越快）=====
       const heartRate = Math.round(
-        72 + (1 - fatigueScore / 100) * 18 + (Math.random() - 0.5) * 8
+        72 + (fatigueScore / 100) * 18 + (Math.random() - 0.5) * 8
       );
 
       setSafety(prev => {
@@ -589,6 +746,48 @@ export function VehicleProvider({ children }) {
 
   const getDrivingDuration = useCallback(() => drivingDurationRef.current, []);
 
+  // ===== 告警循环控制：VehicleStore 掌握节奏 =====
+  // warning: 30-50  → 每 5s 播一次
+  // high:    50-75  → 无缝循环（100ms 轮询，队列空就立即入队，gap=0）
+  // critical:>75    → 暂不处理
+  const stopAlertLoop = useCallback(() => {
+    if (alertTimerRef.current) {
+      clearInterval(alertTimerRef.current);
+      alertTimerRef.current = null;
+    }
+    currentAlertLevelRef.current = 'normal';
+  }, []);
+
+  const startAlertLoop = useCallback((level) => {
+    if (level === 'critical') return; // 严重疲劳暂不处理（没有硬件刹车）
+    if (currentAlertLevelRef.current === level) return; // 等级不变，不重复启动
+    stopAlertLoop();
+    currentAlertLevelRef.current = level;
+
+    const speech = ALERT_SPEECH[level];
+    if (!speech) return;
+
+    // opts.loop=true 由 VehicleStore 推节奏，VoiceStore 不做30s冷却
+    const trigger = () => voiceAlertRef.current?.(speech, level, { loop: true });
+
+    trigger(); // 立即播第一条
+
+    if (level === 'warning') {
+      alertTimerRef.current = setInterval(trigger, 5000);
+    } else if (level === 'high') {
+      // 中度疲劳：每 5 秒一次
+      alertTimerRef.current = setInterval(trigger, 5000);
+    }
+  }, [stopAlertLoop]);
+
+  const setVoiceAlertCallback = useCallback((cb) => {
+    voiceAlertRef.current = cb;
+  }, []);
+
+  const setGreetingCallback = useCallback((cb) => {
+    onGreetingRef.current = cb;
+  }, []);
+
   // 记录疲劳事件到后端 POST /api/v1/safety/fatigue/event
   // 静默降级：后端不可用时只 console.warn，不影响前端流程
   const recordFatigueEvent = useCallback(async ({ score, level, durationSeconds = 0, actionTaken = '', sessionId = null } = {}) => {
@@ -605,11 +804,19 @@ export function VehicleProvider({ children }) {
     }
   }, []);
 
+  // Provider 卸载：清理告警 interval，避免泄漏
+  useEffect(() => {
+    return () => stopAlertLoop();
+  }, [stopAlertLoop]);
+
   return (
     <VehicleContext.Provider value={{
       vehicle, safety, weather, location,
+      cameraActive, camEmotion, camSafety,
       toggleDriving, setDriving, getDrivingDuration,
       refreshLocation, setCity, loadRealWeather, recordFatigueEvent,
+      setVoiceAlertCallback,
+      setGreetingCallback,
     }}>
       {children}
     </VehicleContext.Provider>

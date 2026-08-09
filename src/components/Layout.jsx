@@ -7,10 +7,8 @@ import {
 } from 'lucide-react';
 import { modules } from '../data/mockData';
 import { useTheme } from '../context/ThemeContext';
-
-const iconMap = {
-  LayoutDashboard, Smile, Gauge, Settings, MessageCircle, Shield, CloudSun
-};
+import Sidebar from './Sidebar';
+import RightPanel from './RightPanel';
 
 export default function Layout() {
   const location = useLocation();
@@ -79,8 +77,6 @@ export default function Layout() {
                 border: '1px solid var(--color-border)',
                 color: 'var(--color-text-sub)',
               }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.07)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.04)'}
             >
               <Type size={13} />
               <span className="text-xs font-medium">字体</span>
@@ -88,7 +84,6 @@ export default function Layout() {
             </button>
             {showFontMenu && (
               <>
-                {/* 遮罩层 - 放在header内确保不盖住菜单 */}
                 <div className="fixed inset-0" style={{ zIndex: 99 }} onClick={() => setShowFontMenu(false)} />
                 <div className="absolute right-0 top-full mt-2 rounded-xl py-1 min-w-[140px]"
                   style={{
@@ -107,8 +102,6 @@ export default function Layout() {
                         background: fontId === font.id ? 'rgba(79, 140, 255, 0.06)' : 'transparent',
                         fontFamily: font.family,
                       }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.04)'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = fontId === font.id ? 'rgba(79, 140, 255, 0.06)' : 'transparent'}
                     >
                       {font.name}
                     </button>
@@ -127,8 +120,6 @@ export default function Layout() {
               border: '1px solid var(--color-border)',
               color: 'var(--color-text-sub)',
             }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.07)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(0,0,0,0.04)'}
             title={theme === 'light' ? '切换暗色主题' : '切换亮色主题'}
           >
             {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
@@ -142,8 +133,6 @@ export default function Layout() {
               border: '1px solid rgba(79,140,255,0.2)',
               color: 'var(--color-text-main)',
             }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(79,140,255,0.15)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(79,140,255,0.08)'}
             title="点击修改用户名">
             <User size={13} style={{ color: '#4f8cff' }} />
             <span className="text-xs font-medium">{username}</span>
@@ -158,10 +147,14 @@ export default function Layout() {
         </div>
       </header>
 
-      {/* 主内容区 */}
-      <main className="flex-1 overflow-y-auto overflow-x-hidden relative" style={{ zIndex: 1, padding: '0 40px 32px' }}>
-        <Outlet context={{ username }} />
-      </main>
+      {/* 三栏布局：左侧导航 + 主内容 + 右侧面板 */}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
+        <main className="flex-1 overflow-y-auto overflow-x-hidden relative" style={{ zIndex: 1, padding: '0 32px 32px' }}>
+          <Outlet context={{ username }} />
+        </main>
+        <RightPanel />
+      </div>
 
       {/* 用户名编辑弹窗 */}
       {showEditName && (

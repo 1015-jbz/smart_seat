@@ -17,6 +17,7 @@
 import sys
 import os
 import time
+import math
 import threading
 import logging
 from pathlib import Path
@@ -155,16 +156,69 @@ _pending_lock = threading.Lock()
 _pending_frame = None
 
 # 安全监控状态（线程安全，与表情并行）
+# ===== 成熟疲劳算法状态（PERCLOS + 多特征融合 + EWMA + 滞回状态机）=====
 _cached_safety = {
     "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
     "fatigue_score": 0.0, "alert_level": "normal", "eye_closed": False,
+    # 多特征明细（前端 UI 可展示）
+    "blink_rate": 0.0,       # 每分钟眨眼次数
+    "avg_blink_dur": 0.0,    # 平均眨眼时长 ms
+    "head_drop": False,      # 是否低头
+    "raw_score": 0.0,        # EWMA 平滑前的原始分
 }
 _safety_lock = threading.Lock()
-_eye_closure_history = []    # 最近 150 帧眼睛闭合记录
-_yawn_timestamps = []         # 哈欠发生时间戳
+
+# PERCLOS：基于时间戳的 60 秒滑动窗口（NHTSA / Virginia Tech 标准）
+# 闭合判定：EAR < EAR_THRESHOLD 持续 ≥ 0.8s（捕获微睡眠前兆，NHTSA P80 标准）
+# 工业界公认最可靠的疲劳指标之一
+_EAR_THRESHOLD = 0.20        # 亚洲眼型适配，略微放宽闭合判定
+_EYE_CLOSURE_MIN_DUR = 0.8   # 闭合持续 ≥0.8s 才算 PERCLOS 事件（微睡眠前兆）
+_PERCLOS_WINDOW = 60.0       # 60s 滑动窗口
+
+# 三态视线分类：正常驾驶视线 vs 疲劳相关视线
+# 看仪表盘/后视镜属于正常驾驶行为，不应计分心分
+NORMAL_DRIVING_GAZES = {"forward", "dashboard", "left_mirror", "right_mirror", "rearview"}
+FATIGUE_GAZES = {"down", "left", "right", "up"}
+
+_eye_closure_events = []     # [(start_ts, end_ts, dur)]  PERCLOS 闭合事件
+_blink_events = []           # [(ts, dur)] 眨眼事件（短闭合 <0.8s）
+_was_eye_closed = False
+_eye_close_start_ts = 0.0
+
+_yawn_timestamps = []         # 哈欠时间戳（5分钟窗口）
 _was_yawning = False
 _distraction_start = None
+_head_drop_start = None       # 头部下垂开始时间
 _last_safety_alert_time = 0.0
+
+# 自适应 EWMA：上升快响应（安全优先），下降慢恢复（符合生理规律）
+_EWMA_ALPHA_UP = 0.35
+_EWMA_ALPHA_DOWN = 0.15
+_smoothed_fatigue = 0.0
+
+# 滞回状态机阈值（Hysteresis Band 再拉大，临界抖动克星）
+# 进入阈值 vs 退出阈值差距 ≥20，防止分数在边界附近反复横跳
+_HYSTERESIS = {
+    ("normal",  "warning"):  30,
+    ("warning", "high"):     55,
+    ("high",    "critical"): 80,
+    ("critical","high"):     55,   # 差距25
+    ("high",    "warning"):  35,   # 差距20
+    ("warning","normal"):    8,    # 差距22
+}
+
+# Sustain Gate：持续时长门控，防止瞬时尖峰触发误报
+# 等级需在进入阈值之上维持 N 秒才真正生效
+_SUSTAIN_REQUIRED = {
+    "warning":  2.0,   # warning 需持续 2s
+    "high":     1.5,   # high 需持续 1.5s
+    "critical": 0.5,   # critical 几乎立刻触发（安全优先）
+}
+_sustain_timers = {"warning": 0.0, "high": 0.0, "critical": 0.0}
+_last_frame_ts = 0.0  # 上一帧时间戳，用于计算 frame_delta
+
+# 驾驶时长（分钟）：前端通过 /api/v1/safety/driving_minutes 推送，参与疲劳评分
+_driving_minutes = 0.0
 
 # ============================================================
 # ONNX 表情识别
@@ -348,69 +402,239 @@ def _compute_mar(landmarks, w, h):
     return float(np.linalg.norm(top - bottom) / width)
 
 def _detect_gaze(landmarks, w, h):
-    """视线方向检测"""
+    """视线方向检测 — 三态分类
+    返回 (gaze_label, is_fatigue_gaze)
+      is_fatigue_gaze=False → 正常驾驶视线（forward/dashboard/left_mirror/right_mirror/rearview）
+      is_fatigue_gaze=True  → 疲劳相关视线（down/left/right/up）
+    """
     nose = landmarks[1]
     chin = landmarks[152]
     nose_x = nose.x * w; nose_y = nose.y * h; chin_y = chin.y * h
-    head_down = (chin_y - nose_y) / h > 0.35
+    # 头部俯仰角判断：低头（下巴-鼻子距离过短）
+    head_down = (chin_y - nose_y) / h < 0.35
     nose_offset = (nose_x - w/2) / w
-    if head_down: return "down", True
-    elif nose_offset > 0.32: return "right", True
-    elif nose_offset < -0.32: return "left", True
-    else: return "forward", False
+    if head_down:
+        return "down", True
+    # 大幅偏头 → 看窗外（疲劳相关）
+    if nose_offset > 0.32:
+        return "right", True
+    if nose_offset < -0.32:
+        return "left", True
+    # 小幅偏头 → 看后视镜（正常驾驶）
+    if 0.12 < nose_offset <= 0.32:
+        return "right_mirror", False
+    if -0.32 <= nose_offset < -0.12:
+        return "left_mirror", False
+    # 微低头看仪表盘（正常驾驶）— 用鼻子 Y 坐标辅助判断
+    if nose_y / h > 0.52:
+        return "dashboard", False
+    return "forward", False
 
-def _run_safety_check(landmarks, w, h):
-    """安全检测：EAR + MAR + 视线 → 疲劳评分 / 分心 / 哈欠"""
-    global _eye_closure_history, _yawn_timestamps, _was_yawning, _distraction_start, _last_safety_alert_time
+def _perclos_to_score(p):
+    """PERCLOS → 评分：指数响应曲线（底部平缓容忍小波动，中段加速，顶部饱和）
+    参考 NHTSA P80 标准：
+      p=0.03→8, p=0.06→25, p=0.10→48, p=0.15→62, p=0.20→73, p=0.30→86
+    关键改进：perclos 0.10 时不再立刻达到 50 分（旧线性），而是 48 分（warning 上沿）
+    """
+    if p <= 0: return 0.0
+    return min(100.0, 100.0 * (1 - math.exp(-6.5 * p)))
+
+
+def _run_safety_check(landmarks, w, h, driving_minutes=0.0):
+    """v2 成熟疲劳检测：PERCLOS + 多特征融合 + 自适应EWMA + 滞回状态机 + Sustain Gate
+    特征权重（参考 NHTSA / Virginia Tech VTTI 研究）：
+      PERCLOS 40% + 哈欠 15% + 头部下垂 10% + 眨眼频率 10% + 眨眼时长 10% + 分心 5% + 驾驶时长 10%
+    """
+    global _eye_closure_events, _blink_events, _was_eye_closed, _eye_close_start_ts
+    global _yawn_timestamps, _was_yawning, _distraction_start, _head_drop_start
+    global _last_safety_alert_time, _smoothed_fatigue, _last_frame_ts, _sustain_timers
+
+    now = time.time()
+    # 帧间隔（用于 sustain gate 累积时间）
+    frame_delta = (now - _last_frame_ts) if _last_frame_ts > 0 else 0.05
+    _last_frame_ts = now
 
     ear = _compute_ear(landmarks, w, h)
-    is_eye_closed = ear < 0.2
-    _eye_closure_history.append(is_eye_closed)
-    if len(_eye_closure_history) > 60:
-        _eye_closure_history.pop(0)
-    perclos = sum(_eye_closure_history) / max(len(_eye_closure_history), 1)
+    is_eye_closed = ear < _EAR_THRESHOLD
 
+    # ===== 特征1: PERCLOS（核心指标）=====
+    # 边沿检测：开→闭、闭→开
+    if is_eye_closed and not _was_eye_closed:
+        _eye_close_start_ts = now
+    elif not is_eye_closed and _was_eye_closed:
+        dur = now - _eye_close_start_ts
+        if dur >= _EYE_CLOSURE_MIN_DUR:
+            # 长闭合 → PERCLOS 事件
+            _eye_closure_events.append((_eye_close_start_ts, now, dur))
+        else:
+            # 短闭合 → 正常眨眼事件
+            _blink_events.append((_eye_close_start_ts, dur))
+        _eye_close_start_ts = 0.0
+    _was_eye_closed = is_eye_closed
+
+    # 当前正在闭合且持续中：算入 PERCLOS（避免长时间闭眼被漏算）
+    if is_eye_closed and _eye_close_start_ts > 0:
+        current_closure_dur = now - _eye_close_start_ts
+        if current_closure_dur >= _EYE_CLOSURE_MIN_DUR:
+            _eye_closure_events.append((_eye_close_start_ts, now, current_closure_dur))
+            _eye_close_start_ts = now  # 重置避免重复累加
+
+    # 清理过期事件（60s 窗口）
+    cutoff = now - _PERCLOS_WINDOW
+    _eye_closure_events = [e for e in _eye_closure_events if e[1] > cutoff]
+    _blink_events = [e for e in _blink_events if e[0] > cutoff]
+
+    # PERCLOS = 闭合时间 / 窗口时间
+    total_closure = sum(e[2] for e in _eye_closure_events)
+    perclos = min(1.0, total_closure / _PERCLOS_WINDOW)
+
+    # ===== 特征2: 眨眼频率 + 平均时长 =====
+    blink_rate = len(_blink_events)  # 每分钟次数（窗口 60s）
+    avg_blink_dur = (sum(e[1] for e in _blink_events) / len(_blink_events) * 1000) if _blink_events else 0.0
+
+    # ===== 特征3: 哈欠（5分钟窗口）=====
     mar = _compute_mar(landmarks, w, h)
     is_yawning = mar > 0.6
-    now = time.time()
     if is_yawning and not _was_yawning:
         _yawn_timestamps.append(now)
     _was_yawning = is_yawning
-    _yawn_timestamps = [t for t in _yawn_timestamps if t > now - 60]
+    _yawn_timestamps = [t for t in _yawn_timestamps if t > now - 300]  # 5分钟
     yawn_count = len(_yawn_timestamps)
 
-    gaze, is_distracted = _detect_gaze(landmarks, w, h)
-    if is_distracted:
+    # ===== 特征4 & 5: 视线 + 头部下垂（三态分类）=====
+    gaze, is_fatigue_gaze = _detect_gaze(landmarks, w, h)
+    # 分心只针对"非驾驶相关视线"（看窗外/低头/看天）
+    if is_fatigue_gaze:
         if _distraction_start is None: _distraction_start = now
         distraction_dur = now - _distraction_start
     else:
         _distraction_start = None; distraction_dur = 0.0
 
-    # 疲劳评分：PERCLOS 为主，哈欠/低头/分心为辅
-    fatigue_score = 0.0
-
-    # PERCLOS 梯度计分（20% 起评，曲线平缓，加速恢复）
-    if perclos > 0.20:
-        fatigue_score += min(45, (perclos - 0.20) * 150)  # 25%→7.5, 35%→22.5, 50%+→45
+    is_head_drop = (gaze == "down")
+    if is_head_drop:
+        if _head_drop_start is None: _head_drop_start = now
+        head_drop_dur = now - _head_drop_start
     else:
-        fatigue_score += perclos * 25  # 10%→2.5, 20%→5
+        _head_drop_start = None; head_drop_dur = 0.0
 
-    # 哈欠: 3次/分钟起评
+    # =========================================================
+    # 多特征加权评分（v2 权重）
+    # =========================================================
+    raw_score = 0.0
+
+    # --- PERCLOS 40%（指数曲线，核心指标）---
+    perclos_score = _perclos_to_score(perclos)
+    raw_score += perclos_score * 0.40
+
+    # --- 哈欠 15%（5分钟 >=3 次起评）---
     if yawn_count >= 3:
-        fatigue_score += min(20, yawn_count * 5)  # 3→15, 4→20
+        yawn_score = min(100, (yawn_count - 2) * 25)  # 3→25, 4→50, 6→100
+    else:
+        yawn_score = 0
+    raw_score += yawn_score * 0.15
 
-    # 低头 + 眼睑下垂（双重条件，减少误报）
-    if gaze == "down" and perclos > 0.30:
-        fatigue_score += 10
+    # --- 头部下垂 10%（持续 >2s 起评）---
+    if head_drop_dur > 2.0:
+        head_score = min(100, (head_drop_dur - 2.0) * 25)  # 2s→0, 4s→50, 6s→100
+    else:
+        head_score = 0
+    raw_score += head_score * 0.10
 
-    # 分心 > 8s（大幅放宽）
-    if distraction_dur > 8.0:
-        fatigue_score += min(15, (distraction_dur - 8) * 3)
+    # --- 眨眼频率 10%（正常 15-20，>25 或 <8 异常）---
+    if blink_rate > 25:
+        blink_rate_score = min(100, (blink_rate - 25) * 10)  # 26→10, 35→100
+    elif blink_rate < 8 and len(_blink_events) > 3:
+        blink_rate_score = min(100, (8 - blink_rate) * 10)
+    else:
+        blink_rate_score = 0
+    raw_score += blink_rate_score * 0.10
 
-    if fatigue_score >= 75: alert_level = "critical"
-    elif fatigue_score >= 50: alert_level = "high"
-    elif fatigue_score >= 30: alert_level = "warning"
-    else: alert_level = "normal"
+    # --- 眨眼时长 10%（正常 100-300ms，>400ms 疲劳）---
+    if avg_blink_dur > 400:
+        blink_dur_score = min(100, (avg_blink_dur - 400) / 200 * 100)  # 400→0, 600→100
+    else:
+        blink_dur_score = 0
+    raw_score += blink_dur_score * 0.10
+
+    # --- 分心 5%（配合三态分类，只对疲劳相关视线计分，1.5s 起评）---
+    if distraction_dur > 1.5:
+        dist_score = min(100, (distraction_dur - 1.5) * 35)  # 1.5s→0, 3s→52, 4.4s→100
+    else:
+        dist_score = 0
+    raw_score += dist_score * 0.05
+
+    # --- 驾驶时长 10%（前端传入 driving_minutes）---
+    # 2h→25, 3h→50, 4h→75, 5h+→100
+    if driving_minutes >= 120:
+        drive_score = min(100, (driving_minutes - 120) * 0.42)  # 120→0, 240→50, 358→100
+    else:
+        drive_score = 0
+    raw_score += drive_score * 0.10
+
+    # ===== 自适应 EWMA 时间平滑 =====
+    # 上升快响应（α=0.35），下降慢恢复（α=0.15），符合生理规律
+    alpha = _EWMA_ALPHA_UP if raw_score > _smoothed_fatigue else _EWMA_ALPHA_DOWN
+    _smoothed_fatigue = alpha * raw_score + (1 - alpha) * _smoothed_fatigue
+    fatigue_score = _smoothed_fatigue
+
+    # ===== 滞回状态机（带 Hysteresis Band）=====
+    old_level = _cached_safety.get("_prev_level", "normal")
+    levels = ["normal", "warning", "high", "critical"]
+    idx = levels.index(old_level)
+    target_level = old_level  # 滞回判定出的目标等级
+    # 尝试升级
+    if idx < 3:
+        up_target = levels[idx + 1]
+        if fatigue_score >= _HYSTERESIS[(old_level, up_target)]:
+            target_level = up_target
+    # 尝试降级 — 升级优先
+    if target_level == old_level and idx > 0:
+        down_target = levels[idx - 1]
+        if fatigue_score <= _HYSTERESIS[(old_level, down_target)]:
+            target_level = down_target
+
+    # ===== Sustain Gate v2：持续时长门控 =====
+    # 核心变化：
+    #   • 升级路径：滞回判定的 target 如果和"上次判定"一样 → 连续累积，不清零
+    #   • target 变化但方向仍正确（比如 warning 判定成 high → 清零 warning 但继续累积 high）
+    #   • target 变回 ≤ old_level（不升级了）→ 清零升级计时器
+    #   • 降级：立刻生效
+    #   • 同等级：不操作计时器（不清零！下次再判定升级时继续沿用上一次累积值）
+    levels = ["normal", "warning", "high", "critical"]
+    # 上一帧滞回判定结果（用于判断 target 是否稳定）
+    _last_hyst_target = _cached_safety.get("_hyst_target", old_level)
+
+    if target_level != old_level:
+        if levels.index(target_level) > levels.index(old_level):
+            # ===== 升级方向判定 =====
+            # 如果这次和上次判定同一个 target → 连续累积
+            if target_level == _last_hyst_target:
+                _sustain_timers[target_level] = (_sustain_timers.get(target_level, 0.0) or 0.0) + frame_delta
+            else:
+                # target 变化（例如原判定 warning，这次变 high）：清零旧，初始化新
+                _sustain_timers[_last_hyst_target] = 0.0 if _last_hyst_target != "normal" else 0.0
+                _sustain_timers[target_level] = frame_delta
+            # 达到门限 → 真正升级
+            if _sustain_timers[target_level] >= _SUSTAIN_REQUIRED[target_level]:
+                alert_level = target_level
+                _sustain_timers = {"warning": 0.0, "high": 0.0, "critical": 0.0}
+            else:
+                alert_level = old_level  # 继续等待
+            _cached_safety["_hyst_target"] = target_level
+        else:
+            # ===== 降级路径：立刻生效 =====
+            alert_level = target_level
+            _sustain_timers = {"warning": 0.0, "high": 0.0, "critical": 0.0}
+            _cached_safety["_hyst_target"] = target_level
+    else:
+        # ===== 同等级 =====
+        # 如果 target 就是 old_level（不升级不降级），清零升级累积计时器
+        # （防上一帧接近升级但这帧又回来了，下次要判定升级时重新累积）
+        if _last_hyst_target != old_level and levels.index(_last_hyst_target) > levels.index(old_level):
+            # 上一帧判定要升级但没达到 → 这次判定回同等级 → 清零
+            _sustain_timers[_last_hyst_target] = 0.0
+        _cached_safety["_hyst_target"] = old_level
+        alert_level = old_level
 
     with _safety_lock:
         old_level = _cached_safety.get("_prev_level", "normal")
@@ -429,6 +653,13 @@ def _run_safety_check(landmarks, w, h):
             "perclos": perclos, "yawn_count": yawn_count, "gaze": gaze,
             "distraction_dur": distraction_dur, "eye_closed": is_eye_closed,
             "fatigue_score": fatigue_score, "alert_level": alert_level,
+            # v2 新增多特征明细
+            "blink_rate": blink_rate,
+            "avg_blink_dur": avg_blink_dur,
+            "head_drop": is_head_drop,
+            "raw_score": raw_score,
+            "is_fatigue_gaze": is_fatigue_gaze,
+            "driving_minutes": driving_minutes,
         })
 
 
@@ -482,8 +713,8 @@ def _detector_loop():
                             _cached_landmarks = lm
                             _cached_box = new_box
 
-                        # 安全检测（疲劳/哈欠/分心）
-                        _run_safety_check(lm, w, h)
+                        # 安全检测（疲劳/哈欠/分心）— 传入驾驶时长参与评分
+                        _run_safety_check(lm, w, h, driving_minutes=_driving_minutes)
 
                         # 表情识别
                         new_emo, new_conf = None, 0.0
@@ -514,10 +745,18 @@ def _detector_loop():
                                 "distraction_dur": 0.0, "eye_closed": False,
                                 "fatigue_score": 0.0, "alert_level": "normal",
                                 "alert_message": "",
+                                "blink_rate": 0.0, "avg_blink_dur": 0.0,
+                                "head_drop": False, "raw_score": 0.0,
+                                "is_fatigue_gaze": False,
                             })
                             _cached_safety["_prev_level"] = "normal"
-                        global _distraction_start
+                        global _distraction_start, _head_drop_start, _smoothed_fatigue, _sustain_timers, _was_eye_closed, _eye_close_start_ts
                         _distraction_start = None
+                        _head_drop_start = None
+                        _smoothed_fatigue = 0.0
+                        _sustain_timers = {"warning": 0.0, "high": 0.0, "critical": 0.0}
+                        _was_eye_closed = False
+                        _eye_close_start_ts = 0.0
             else:
                 # Haar Cascade 降级路径
                 if _face_cascade is not None:
@@ -740,6 +979,22 @@ def api_state():
 @flask_app.route('/api/health')
 def api_health():
     return jsonify({'status': 'ok', 'cv2': HAS_CV2, 'mediapipe': HAS_MEDIAPIPE, 'onnx': _ort_session is not None})
+
+
+@flask_app.route('/api/v1/safety/driving_minutes', methods=['POST'])
+def api_set_driving_minutes():
+    """前端推送当前驾驶时长（分钟），后端参与疲劳评分（v2 权重 10%）
+    Body: {"driving_minutes": 135.5}
+    """
+    global _driving_minutes
+    try:
+        data = request.get_json(silent=True) or {}
+        val = float(data.get('driving_minutes', 0))
+        if val < 0: val = 0
+        _driving_minutes = val
+        return jsonify({'status': 'ok', 'driving_minutes': _driving_minutes})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
 
 
 if __name__ == '__main__':

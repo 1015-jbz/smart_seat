@@ -1,6 +1,7 @@
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
 import { VehicleProvider } from './context/VehicleStore';
+import { VoiceProvider } from './context/VoiceStore';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
@@ -16,22 +17,24 @@ export default function App() {
   return (
     <ThemeProvider>
       <VehicleProvider>
-        <HashRouter>
-          <ErrorBoundary>
-            <Routes>
-              <Route element={<Layout />}>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/emotion" element={<EmotionRecognition />} />
-                <Route path="/vehicle" element={<VehicleDashboard />} />
-                <Route path="/cabin" element={<CabinControl />} />
-                <Route path="/voice" element={<VoiceAssistant />} />
-                <Route path="/safety" element={<DrivingSafety />} />
-                <Route path="/weather" element={<Weather />} />
-                <Route path="*" element={<NotFound />} />
-              </Route>
-            </Routes>
-          </ErrorBoundary>
-        </HashRouter>
+        <VoiceProvider>
+          <HashRouter>
+            <ErrorBoundary>
+              <Routes>
+                <Route element={<Layout />}>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/emotion" element={<EmotionRecognition />} />
+                  <Route path="/vehicle" element={<VehicleDashboard />} />
+                  <Route path="/cabin" element={<CabinControl />} />
+                  <Route path="/voice" element={<VoiceAssistant />} />
+                  <Route path="/safety" element={<DrivingSafety />} />
+                  <Route path="/weather" element={<Weather />} />
+                  <Route path="*" element={<NotFound />} />
+                </Route>
+              </Routes>
+            </ErrorBoundary>
+          </HashRouter>
+        </VoiceProvider>
       </VehicleProvider>
     </ThemeProvider>
   );
