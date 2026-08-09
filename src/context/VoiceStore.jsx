@@ -61,8 +61,31 @@ export function VoiceProvider({ children }) {
   // 记录当前正在播放的优先级（speak 内部 cancel 判断时用）
   const curPriorityRef = useRef(null);
 
+  // ===== 温柔女声：语音包选择 + 音色参数 =====
+  // 温柔女声常见关键词（各平台中文名/英文名），命中即优先使用
+  const FEMALE_SOFT_KEYS = ['温柔', '女', '晓晓', '小希', '小雅', '小美', '晓晴', 'Tingting', 'Yaoyao', 'Meijia', 'Mei-jia', 'Sinji', 'Sin-ji', 'Female'];
+  const pickSoftFemaleVoice = (voices) => {
+    if (!voices || voices.length === 0) return null;
+    const zhVoices = voices.filter(v => v.lang && v.lang.toLowerCase().includes('zh'));
+    if (zhVoices.length === 0) return null;
+    // 第一优先级：名字命中"温柔女声"关键词
+    const hit = zhVoices.find(v => {
+      const n = (v.name || '').toLowerCase();
+      return FEMALE_SOFT_KEYS.some(k => n.includes(k.toLowerCase()));
+    });
+    if (hit) return hit;
+    // 第二优先级：去掉明显的"男"关键词，取剩下第一个中文
+    const noMale = zhVoices.filter(v => !(v.name || '').includes('男') && !(v.name || '').toLowerCase().includes('male'));
+    return (noMale[0] || zhVoices[0]);
+  };
+  // 温柔女声默认参数：音调略高(pitch 1.15)、语速适中、音量正常
+  const applySoftFemaleProfile = (utter, priority) => {
+    utter.pitch = 1.15;
+    utter.rate = priority === 'greeting' ? 1.15 : 1.0;
+    utter.volume = 1.0;
+  };
+
   // ===== 内置 TTS =====
-  // greeting 优先级语速微快(1.15)以减少唤醒等待感，其他保持 1.0
   const speak = useCallback((text, priority = 'normal') => {
     return new Promise((resolve) => {
       if (!window.speechSynthesis) { resolve(); return; }
@@ -77,17 +100,12 @@ export function VoiceProvider({ children }) {
       }
       // 如果优先级不够且正在说话，则排队由 speakNext 串行消费（不立即播）
       if (newRank <= curRank && (synth.speaking || synth.pending)) {
-        // 不 cancel、不立即播，直接走队列——但 speak 本身是 speakNext 调用的，
-        // 到这里说明已经出队了；理论上 speaking 时 speakNext 不会再调 speak。
-        // 加个兜底：排队 200ms 重试，不立即打断。
         setTimeout(() => {
           if (!window.speechSynthesis) { resolve(); return; }
           const utter = new SpeechSynthesisUtterance(text);
           utter.lang = 'zh-CN';
-          utter.rate = priority === 'greeting' ? 1.15 : 1.0;
-          utter.pitch = 1.0;
-          const voices = window.speechSynthesis.getVoices();
-          const zhVoice = voices.find(v => v.lang.includes('zh'));
+          applySoftFemaleProfile(utter, priority);
+          const zhVoice = pickSoftFemaleVoice(window.speechSynthesis.getVoices());
           if (zhVoice) utter.voice = zhVoice;
           let done = false;
           const finish = () => {
@@ -104,10 +122,8 @@ export function VoiceProvider({ children }) {
       curPriorityRef.current = priority;
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'zh-CN';
-      utter.rate = priority === 'greeting' ? 1.15 : 1.0;
-      utter.pitch = 1.0;
-      const voices = window.speechSynthesis.getVoices();
-      const zhVoice = voices.find(v => v.lang.includes('zh'));
+      applySoftFemaleProfile(utter, priority);
+      const zhVoice = pickSoftFemaleVoice(window.speechSynthesis.getVoices());
       if (zhVoice) utter.voice = zhVoice;
       // 双重兜底：即使 onend 没触发（Chrome 偶发 bug），最长 10s 也强制 resolve，防止队列卡死
       let done = false;
