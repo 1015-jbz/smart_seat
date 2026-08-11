@@ -83,7 +83,39 @@ function fetchWithTimeout(url, ms = 5000) {
 // 国内 Chrome 的 getCurrentPosition 底层调 Google 服务基本不可用，IP 定位是更可靠的实时方案。
 // 返回 { city, latitude, longitude } 或 null。
 async function locateByIP() {
-  // 方案1: 太平洋电脑网（国内稳定、免费、无需 key，返回中文城市名；GBK 编码需解码）
+  // 方案1: 高德 IP 定位（国内最准，rectangle取中点即为坐标）
+  try {
+    const res = await fetchWithTimeout(
+      `https://restapi.amap.com/v3/ip?key=8daa61d5b1071072de54569a88268aad`,
+      5000
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data.status === '1' && (data.city || data.province)) {
+        const cityRaw = (data.city || data.province || '').replace(/市$/, '');
+        const found = CITY_COORDS.find(c => cityRaw.includes(c.name) || c.name.includes(cityRaw));
+        let lat = found ? found.lat : null;
+        let lon = found ? found.lon : null;
+        // rectangle: "SW经,SW纬;NE经,NE纬" → 取中点
+        if (!lat && data.rectangle) {
+          const parts = data.rectangle.split(';');
+          if (parts.length === 2) {
+            const sw = parts[0].split(',').map(Number);
+            const ne = parts[1].split(',').map(Number);
+            lon = (sw[0] + ne[0]) / 2;
+            lat = (sw[1] + ne[1]) / 2;
+          }
+        }
+        return {
+          city: found ? found.name : cityRaw,
+          latitude: lat,
+          longitude: lon,
+        };
+      }
+    }
+  } catch (e) { /* 静默，试下一个 */ }
+
+  // 方案2: 太平洋电脑网（GBK 编码）
   try {
     const res = await fetchWithTimeout('https://whois.pconline.com.cn/ipJson.jsp?json=true', 5000);
     const buf = await res.arrayBuffer();
@@ -92,7 +124,6 @@ async function locateByIP() {
     if (match) {
       const data = JSON.parse(match[0]);
       if (data.city) {
-        // 模糊匹配城市库（pconline 返回"南京市"，库里有"南京"）
         const found = CITY_COORDS.find(c => data.city.includes(c.name) || c.name.includes(data.city));
         return {
           city: found ? found.name : data.city.replace(/市$/, ''),
@@ -103,7 +134,7 @@ async function locateByIP() {
     }
   } catch (e) { /* 静默，试下一个 */ }
 
-  // 方案2: ipinfo.io（海外，返回经纬度，Cloudflare CDN 国内可访问）
+  // 方案3: ipinfo.io
   try {
     const res = await fetchWithTimeout('https://ipinfo.io/json', 5000);
     if (res.ok) {
@@ -251,15 +282,19 @@ export function VehicleProvider({ children }) {
     }
   }, []);
 
-  // 应用启动时自动获取一次位置
+  // 应用启动时：先恢复上次手动选的城市 → 没有才走 IP 定位
   useEffect(() => {
-    refreshLocation();
-  }, [refreshLocation]);
+    if (!restoreSavedCity()) {
+      refreshLocation();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 手动选择城市：定位失败或用户想切换城市时的可靠兜底，不依赖浏览器权限
+  // localStorage 持久化，刷新/重启后自动恢复
   const setCity = useCallback((cityName) => {
     const found = CITY_COORDS.find(c => c.name === cityName);
     if (found) {
+      try { localStorage.setItem('smart_seat_city', cityName); } catch (_) {}
       setLocation({
         city: found.name,
         latitude: found.lat,
@@ -272,6 +307,27 @@ export function VehicleProvider({ children }) {
         manual: true,
       });
     }
+  }, []);
+
+  // localStorage 记住的城市优先恢复，避免每次都要重新定位
+  const restoreSavedCity = useCallback(() => {
+    try {
+      const saved = localStorage.getItem('smart_seat_city');
+      if (saved) {
+        const found = CITY_COORDS.find(c => c.name === saved);
+        if (found) {
+          setLocation({
+            city: found.name,
+            latitude: found.lat,
+            longitude: found.lon,
+            located: true, loading: false, error: null, denied: false,
+            source: 'manual', manual: true,
+          });
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
   }, []);
 
   // 页面后台时暂停所有定时器，避免不可见标签页持续触发 setState 与 CPU 占用

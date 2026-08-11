@@ -1,12 +1,10 @@
 """IP 定位代理服务
 
 流程：
-  1. pconline IP 定位 → 拿到 city（中文城市名）+ pro（省份）
-  2. 用 Open-Meteo Geocoding API 按城市名查真实经纬度（免费、无需 key）
-  3. geocoding 失败 → fallback 本地 CITY_COORDS 模糊匹配
-  4. 本地也匹配不到 → 用省份回退到省会（本地库）
-  5. 全部失败 → fallback ipinfo.io（返回经纬度）
-  6. 还失败 → 返回 None（routers 层给北京默认值）
+  1. 高德 IP 定位（国内最准，直接返回矩形坐标取中点）
+  2. pconline IP 定位 → 拿到 city + pro → 本地库 / geocoding
+  3. ipinfo.io fallback（返回经纬度）
+  4. 全部失败 → 返回 None（routers 层给北京默认值）
 
 返回：{ city, latitude, longitude, pro, source }
   保证 latitude/longitude 非 None。
@@ -18,6 +16,8 @@ from typing import Optional
 import httpx
 
 from config import (
+    AMAP_IP_URL,
+    AMAP_KEY,
     PCONLINE_IP_URL,
     IPINFO_URL,
     API_TIMEOUT,
@@ -92,20 +92,109 @@ async def _geocode(city_name: str) -> Optional[tuple]:
     return None
 
 
+# ======================================================================
+# 主入口
+# ======================================================================
+
 async def locate_by_ip() -> Optional[dict]:
-    """IP 定位主流程。"""
-    # 方案 1: pconline（拿城市名）→ geocoding（查精确坐标）
+    """IP 定位主流程：高德 → pconline → ipinfo。"""
+    # 方案 1: 高德 IP 定位（国内最准，直接返回坐标）
+    result = await _locate_via_amap()
+    if result:
+        return result
+
+    # 方案 2: pconline（拿城市名）→ geocoding（查精确坐标）
     result = await _locate_via_pconline()
     if result:
         return result
 
-    # 方案 2: ipinfo.io（直接返回经纬度）
+    # 方案 3: ipinfo.io（直接返回经纬度）
     result = await _locate_via_ipinfo()
     if result:
         return result
 
     return None
 
+
+# ======================================================================
+# 方案 1: 高德 IP 定位
+# ======================================================================
+
+async def _locate_via_amap() -> Optional[dict]:
+    """高德 IP 定位（v3/ip）：返回 province、city、rectangle。
+
+    rectangle 格式: "SW经,SW纬;NE经,NE纬"，取中点作为城市坐标。
+    参考：https://lbs.amap.com/api/webservice/guide/api/ipconfig
+    """
+    try:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
+            resp = await client.get(AMAP_IP_URL, params={
+                "key": AMAP_KEY,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+
+        if data.get("status") != "1" or data.get("infocode") != "10000":
+            print(f"[location_proxy] 高德 IP 定位失败: {data.get('info', 'unknown')}")
+            return None
+
+        province = data.get("province") or ""
+        city = data.get("city") or ""
+
+        # 直辖市（province 如"北京市"，city 为空字符串）
+        if not city and province:
+            city = province
+        if not city:
+            return None
+
+        # 去掉"市"后缀
+        city_name = _strip_suffix(city) or city
+        pro_clean = _strip_suffix(province) if province else None
+
+        # 从 rectangle 取中点坐标（高德 IP API 不直接返回坐标）
+        rect = data.get("rectangle") or ""
+        lat, lon = None, None
+        if rect and ";" in rect:
+            parts = rect.split(";")
+            if len(parts) == 2:
+                sw = parts[0].split(",")
+                ne = parts[1].split(",")
+                if len(sw) == 2 and len(ne) == 2:
+                    lon = (float(sw[0]) + float(ne[0])) / 2.0
+                    lat = (float(sw[1]) + float(ne[1])) / 2.0
+
+        if lat is not None and lon is not None:
+            # 用本地库匹配城市名（比高德返回的更标准）
+            found = _match_local(city, province)
+            return {
+                "city": found["name"] if found else city_name,
+                "latitude": lat,
+                "longitude": lon,
+                "pro": pro_clean,
+                "source": "amap",
+            }
+
+        # rectangle 解析失败 → 尝试 geocoding
+        geo = await _geocode(city_name)
+        if geo:
+            return {
+                "city": city_name,
+                "latitude": geo[0],
+                "longitude": geo[1],
+                "pro": pro_clean,
+                "source": "amap",
+            }
+
+        return None
+
+    except Exception as e:
+        print(f"[location_proxy] 高德 IP 定位异常: {e}")
+        return None
+
+
+# ======================================================================
+# 方案 2: pconline IP 定位
+# ======================================================================
 
 async def _locate_via_pconline() -> Optional[dict]:
     """太平洋电脑网 IP 定位 → Open-Meteo geocoding 查坐标。"""
@@ -135,7 +224,7 @@ async def _locate_via_pconline() -> Optional[dict]:
                 "latitude": found["lat"],
                 "longitude": found["lon"],
                 "pro": pro_clean,
-                "source": "ip",
+                "source": "pconline",
             }
 
         # 2) 本地库没有 → Open-Meteo geocoding 查坐标
@@ -146,22 +235,18 @@ async def _locate_via_pconline() -> Optional[dict]:
                 "latitude": geo[0],
                 "longitude": geo[1],
                 "pro": pro_clean,
-                "source": "ip",
+                "source": "pconline",
             }
 
-        # 3) 都失败 → 北京保底
-        fallback = CITY_COORDS[0]
-        return {
-            "city": "北京",
-            "latitude": fallback["lat"],
-            "longitude": fallback["lon"],
-            "pro": pro_clean,
-            "source": "default",
-        }
+        return None
     except Exception as e:
         print(f"[location_proxy] pconline 定位失败: {e}")
         return None
 
+
+# ======================================================================
+# 方案 3: ipinfo.io
+# ======================================================================
 
 async def _locate_via_ipinfo() -> Optional[dict]:
     """ipinfo.io 定位 fallback（直接返回经纬度）。"""
