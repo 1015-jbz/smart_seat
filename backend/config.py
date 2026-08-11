@@ -44,8 +44,6 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 # IP 定位接口
-AMAP_IP_URL = "https://restapi.amap.com/v3/ip"
-AMAP_KEY = os.getenv("AMAP_KEY", "8daa61d5b1071072de54569a88268aad")
 PCONLINE_IP_URL = "https://whois.pconline.com.cn/ipJson.jsp?json=true"
 IPINFO_URL = "https://ipinfo.io/json"
 

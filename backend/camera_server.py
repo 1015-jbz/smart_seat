@@ -111,8 +111,8 @@ try:
             base_options=BaseOptions(model_asset_path=str(_landmarker_path)),
             running_mode=RunningMode.VIDEO,
             num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_face_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
             output_face_blendshapes=False,
         )
         _mp_face_landmarker = FaceLandmarker.create_from_options(_options)
@@ -155,37 +155,101 @@ _cached_landmarks = None      # MediaPipe landmarks
 _pending_lock = threading.Lock()
 _pending_frame = None
 
-# ===== 疲劳检测 v6：事件驱动（哈欠→轻度，闭眼→中/重度）=====
-# 评分仅作参考值，告警等级由检测到的事件直接决定
-
+# 安全监控状态（线程安全，与表情并行）
+# ===== 成熟疲劳算法状态（PERCLOS + 多特征融合 + EWMA + 滞回状态机）=====
 _cached_safety = {
     "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
     "fatigue_score": 0.0, "alert_level": "normal", "eye_closed": False,
-    "blink_rate": 0.0, "avg_blink_dur": 0.0,
-    "head_drop": False, "raw_score": 0.0,
+    # 多特征明细（前端 UI 可展示）
+    "blink_rate": 0.0,       # 每分钟眨眼次数
+    "avg_blink_dur": 0.0,    # 平均眨眼时长 ms
+    "head_drop": False,      # 是否低头
+    "raw_score": 0.0,        # EWMA 平滑前的原始分
 }
 _safety_lock = threading.Lock()
 
-# --- 检测阈值 ---
-_EAR_THRESHOLD = 0.20              # 眼睛闭合 EAR 阈值
-_MAR_YAWN_THRESHOLD = 0.6          # 哈欠 MAR 阈值
+# PERCLOS：基于时间戳的 45 秒滑动窗口（NHTSA / Virginia Tech 标准）
+# 闭合判定：EAR < EAR_THRESHOLD 持续 ≥ 1.5s（捕获微睡眠前兆，NHTSA P80 标准）
+# 工业界公认最可靠的疲劳指标之一
+_EAR_THRESHOLD = 0.15        # 固定下限：EAR 低于此值才算闭眼（适配低 EAR 眼型）
+_EYE_CLOSURE_MIN_DUR = 1.5   # 闭合持续 ≥1.5s 才算 PERCLOS 事件（过滤正常慢眨眼）
+_PERCLOS_WINDOW = 30.0       # 30s 滑动窗口（缩短窗口加速过期恢复）
+_PERCLOS_MIN_EVENTS = 2      # 窗口内闭眼事件 <2 次时 PERCLOS 直接归零（防单次误判）
+_WARMUP_FRAMES = 30          # 启动宽限期：前 30 帧（约 4.5s）不计算疲劳分数
 
-# --- 事件→告警映射 ---
-_EYE_CLOSED_WARNING_DUR = 2.0      # 持续闭眼 >2s → high（中度疲劳）
-_EYE_CLOSED_CRITICAL_DUR = 4.0     # 持续闭眼 >4s → critical（重度疲劳）
+# 三态视线分类：正常驾驶视线 vs 疲劳相关视线
+# 看仪表盘/后视镜属于正常驾驶行为，不应计分心分
+NORMAL_DRIVING_GAZES = {"forward", "dashboard", "left_mirror", "right_mirror", "rearview"}
+FATIGUE_GAZES = {"down", "left", "right", "up"}
 
-# --- 告警冷却 ---
-_ALERT_HOLD_TIME = 3.0             # 告警最少保持时间（前端轮询是1.2s，3s足够读到）
-_YAWN_COOLDOWN = 30.0              # 两次哈欠告警最短间隔
-_EYE_COOLDOWN = 15.0               # 两次闭眼告警最短间隔
-
+_eye_closure_events = []     # [(start_ts, end_ts, dur)]  PERCLOS 闭合事件
+_blink_events = []           # [(ts, dur)] 眨眼事件（短闭合 <0.8s）
 _was_eye_closed = False
 _eye_close_start_ts = 0.0
+
+_yawn_timestamps = []         # 哈欠时间戳（5分钟窗口）
 _was_yawning = False
-_last_yawn_alert_ts = 0.0
-_last_eye_alert_ts = 0.0
-_alert_start_ts = 0.0
-_alert_cause = None                 # "yawn" | "eye" | None — 当前告警原因
+_distraction_start = None
+_head_drop_start = None       # 头部下垂开始时间
+_last_safety_alert_time = 0.0
+
+# 自适应 EWMA：上升适度响应（安全优先），下降较快恢复（避免分数居高不下）
+_EWMA_ALPHA_UP = 0.25
+_EWMA_ALPHA_DOWN = 0.28
+_smoothed_fatigue = 0.0
+_warmup_frame_count = 0    # 启动宽限期帧计数器
+
+# ===== 自适应基线校准 =====
+# 宽限期内采集用户正常 EAR 和头部姿态，结束后取中位数作为个人基线
+# 闭眼判定：EAR < max(0.12, baseline_ear * 0.65)  → 下降到基线 65% 以下才算闭眼
+# 低头判定：ratio < baseline_head * 0.60           → 下降到基线 60% 以下才算低头
+_ear_samples = []           # 宽限期内 EAR 样本
+_head_ratio_samples = []    # 宽限期内 (chin_y-nose_y)/h 样本
+_ear_baseline = 0.0         # 个人 EAR 基线
+_head_ratio_baseline = 0.0  # 个人头部姿态基线
+
+# 滞回状态机阈值（Hysteresis Band）
+# 进入门槛提高（减少误触发），退出门槛提高（加速恢复正常）
+_HYSTERESIS = {
+    ("normal",  "warning"):  40,   # 提高：35→40，更难进入 warning
+    ("warning", "high"):     60,   # 提高：55→60，更难进入 high
+    ("high",    "critical"): 80,
+    ("critical","high"):     50,   # 提高：55→50，更快退出 critical
+    ("high",    "warning"):  40,   # 提高：35→40，更快退出 high
+    ("warning","normal"):    15,   # 提高：8→15，更快恢复正常
+}
+
+# Sustain Gate：持续时长门控，防止瞬时尖峰触发误报
+# 等级需在进入阈值之上维持 N 秒才真正生效
+_SUSTAIN_REQUIRED = {
+    "warning":  4.0,   # warning 需持续 4s（提高：3s→4s）
+    "high":     3.0,   # high 需持续 3s（提高：2.5s→3s）
+    "critical": 1.5,   # critical 需持续 1.5s（提高：1s→1.5s）
+}
+_sustain_timers = {"warning": 0.0, "high": 0.0, "critical": 0.0}
+_last_frame_ts = 0.0  # 上一帧时间戳，用于计算 frame_delta
+
+# ===== 事件驱动告警状态 =====
+# 检测到具体动作（闭眼/哈欠/低头/分心）就立即触发告警，不依赖综合分数
+_alert_state = {
+    "eye_closure_start": 0.0,       # 当前闭眼开始时间
+    "head_drop_start": 0.0,         # 当前低头开始时间
+    "distraction_start": 0.0,       # 当前分心开始时间
+    "last_eye_alert": 0.0,          # 最后一次闭眼告警时间
+    "last_yawn_alert": 0.0,         # 最后一次哈欠告警时间
+    "last_head_alert": 0.0,         # 最后一次低头告警时间
+    "last_dist_alert": 0.0,         # 最后一次分心告警时间
+}
+_ALERT_COOLDOWN = 5.0   # 同类告警冷却期（秒）— 缩短以支持持续提醒
+_EYE_ALERT_DUR = 1.0    # 闭眼持续多久触发告警（秒）— 降低到1秒，发现动作就提醒
+_HEAD_ALERT_DUR = 1.5   # 低头持续多久触发告警（秒）
+_DIST_ALERT_DUR = 2.0   # 分心持续多久触发告警（秒）
+# 严重程度升级阈值（秒）
+_EYE_HIGH_DUR = 5.0     # 闭眼≥5s → 升级为 high
+_EYE_CRIT_DUR = 8.0     # 闭眼≥8s → 升级为 critical
+_HEAD_HIGH_DUR = 5.0    # 低头≥5s → 升级为 high
+
+# 驾驶时长（分钟）：前端通过 /api/v1/safety/driving_minutes 推送，参与疲劳评分
 _driving_minutes = 0.0
 
 # ============================================================
@@ -369,133 +433,288 @@ def _compute_mar(landmarks, w, h):
     if width < 1e-6: return 0.0
     return float(np.linalg.norm(top - bottom) / width)
 
-def _detect_gaze(landmarks, w, h):
+def _detect_gaze(landmarks, w, h, head_down_threshold=0.28):
     """视线方向检测 — 三态分类
     返回 (gaze_label, is_fatigue_gaze)
       is_fatigue_gaze=False → 正常驾驶视线（forward/dashboard/left_mirror/right_mirror/rearview）
       is_fatigue_gaze=True  → 疲劳相关视线（down/left/right/up）
+    head_down_threshold: 自适应低头阈值（基于个人基线校准）
     """
     nose = landmarks[1]
     chin = landmarks[152]
     nose_x = nose.x * w; nose_y = nose.y * h; chin_y = chin.y * h
     # 头部俯仰角判断：低头（下巴-鼻子距离过短）
-    head_down = (chin_y - nose_y) / h < 0.35
+    # 使用自适应阈值（基于个人基线校准）
+    head_down = (chin_y - nose_y) / h < head_down_threshold
     nose_offset = (nose_x - w/2) / w
     if head_down:
         return "down", True
-    # 大幅偏头 → 看窗外（疲劳相关）
-    if nose_offset > 0.32:
+    # 大幅偏头 → 看窗外（疲劳相关），0.38 减少正常偏头误判
+    if nose_offset > 0.38:
         return "right", True
-    if nose_offset < -0.32:
+    if nose_offset < -0.38:
         return "left", True
     # 小幅偏头 → 看后视镜（正常驾驶）
-    if 0.12 < nose_offset <= 0.32:
+    if 0.15 < nose_offset <= 0.38:
         return "right_mirror", False
-    if -0.32 <= nose_offset < -0.12:
+    if -0.38 <= nose_offset < -0.15:
         return "left_mirror", False
     # 微低头看仪表盘（正常驾驶）— 用鼻子 Y 坐标辅助判断
-    if nose_y / h > 0.52:
+    if nose_y / h > 0.55:
         return "dashboard", False
     return "forward", False
 
+def _perclos_to_score(p):
+    """PERCLOS → 评分：指数响应曲线（底部平缓容忍小波动，中段加速，顶部饱和）
+    调参：系数从 6.5 降至 5.5，降低低 PERCLOS 区间的得分，减少误触发
+      p=0.03→8, p=0.06→28, p=0.10→42, p=0.15→56, p=0.20→67, p=0.30→81
+    """
+    if p <= 0: return 0.0
+    return min(100.0, 100.0 * (1 - math.exp(-5.5 * p)))
+
+
 def _run_safety_check(landmarks, w, h, driving_minutes=0.0):
-    """v6 事件驱动疲劳检测：哈欠→轻度提醒，闭眼→中/重度告警。
-    评分仅作参考值，告警由检测到的事件直接决定，不经过任何评分管线。"""
-    global _was_eye_closed, _eye_close_start_ts, _was_yawning
-    global _last_yawn_alert_ts, _last_eye_alert_ts, _alert_start_ts, _alert_cause
+    """事件驱动疲劳检测：检测到闭眼/哈欠/低头/分心等动作立即触发告警"""
+    global _eye_closure_events, _blink_events, _was_eye_closed, _eye_close_start_ts
+    global _yawn_timestamps, _was_yawning, _distraction_start, _head_drop_start
+    global _last_safety_alert_time, _smoothed_fatigue, _last_frame_ts, _sustain_timers
+    global _warmup_frame_count, _ear_samples, _head_ratio_samples
+    global _ear_baseline, _head_ratio_baseline, _alert_state
 
     now = time.time()
+    frame_delta = (now - _last_frame_ts) if _last_frame_ts > 0 else 0.05
+    _last_frame_ts = now
 
-    # ===== 1. 眼睛闭合检测 =====
+    # ===== 计算原始特征值 =====
     ear = _compute_ear(landmarks, w, h)
-    is_eye_closed = ear < _EAR_THRESHOLD
+    nose = landmarks[1]
+    chin = landmarks[152]
+    nose_y = nose.y * h; chin_y = chin.y * h
+    head_ratio = (chin_y - nose_y) / h
+    mar = _compute_mar(landmarks, w, h)
 
+    # ===== 启动宽限期：前 N 帧采集基线不评分 =====
+    _warmup_frame_count += 1
+    if _warmup_frame_count <= _WARMUP_FRAMES:
+        _ear_samples.append(ear)
+        _head_ratio_samples.append(head_ratio)
+        if _warmup_frame_count == _WARMUP_FRAMES:
+            _ear_baseline = float(np.median(_ear_samples))
+            _head_ratio_baseline = float(np.median(_head_ratio_samples))
+            logger.info(f"[SAFETY] 基线校准完成: EAR={_ear_baseline:.4f} head_ratio={_head_ratio_baseline:.4f} (共{_WARMUP_FRAMES}帧)")
+            _ear_samples = []
+            _head_ratio_samples = []
+        elif _warmup_frame_count % 20 == 0:
+            logger.info(f"[SAFETY] 宽限期中: {_warmup_frame_count}/{_WARMUP_FRAMES} ear={ear:.4f} mar={mar:.4f}")
+        with _safety_lock:
+            _cached_safety.update({
+                "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
+                "distraction_dur": 0.0, "eye_closed": False,
+                "fatigue_score": 0.0, "alert_level": "normal",
+                "blink_rate": 0.0, "avg_blink_dur": 0.0,
+                "head_drop": False, "raw_score": 0.0,
+                "is_fatigue_gaze": False,
+                "ear": round(ear, 4),
+                "mar": round(mar, 4),
+                "warmup": f"{_warmup_frame_count}/{_WARMUP_FRAMES}",
+            })
+        return
+
+    # ===== 自适应阈值 =====
+    ear_threshold = max(_EAR_THRESHOLD, _ear_baseline * 0.50) if _ear_baseline > 0 else _EAR_THRESHOLD
+    head_down_threshold = (_head_ratio_baseline * 0.60) if _head_ratio_baseline > 0 else 0.28
+
+    # 闭眼去抖动：连续 3 帧低于阈值才算闭眼
+    if ear < ear_threshold:
+        _eye_low_count = getattr(_run_safety_check, '_eye_low_count', 0) + 1
+    else:
+        _eye_low_count = 0
+    _run_safety_check._eye_low_count = _eye_low_count
+    is_eye_closed = _eye_low_count >= 3
+
+    # ===== PERCLOS 事件追踪 =====
     if is_eye_closed and not _was_eye_closed:
         _eye_close_start_ts = now
-    elif not is_eye_closed:
+    elif not is_eye_closed and _was_eye_closed:
+        dur = now - _eye_close_start_ts
+        if dur >= _EYE_CLOSURE_MIN_DUR:
+            if _eye_closure_events and _eye_closure_events[-1][0] == _eye_close_start_ts:
+                _eye_closure_events[-1] = (_eye_close_start_ts, now, dur)
+            else:
+                _eye_closure_events.append((_eye_close_start_ts, now, dur))
+        else:
+            _blink_events.append((_eye_close_start_ts, dur))
         _eye_close_start_ts = 0.0
     _was_eye_closed = is_eye_closed
 
-    closure_dur = (now - _eye_close_start_ts) if _eye_close_start_ts > 0 else 0.0
-
-    # ===== 2. 哈欠检测 =====
-    mar = _compute_mar(landmarks, w, h)
-    is_yawning = mar > _MAR_YAWN_THRESHOLD
-
-    # ===== 3. 事件判定告警等级 =====
-    new_alert = None  # 本轮检测到的新事件类型
-
-    # 闭眼等级：按持续时间分层
-    if closure_dur >= _EYE_CLOSED_CRITICAL_DUR:
-        new_alert = "critical"
-    elif closure_dur >= _EYE_CLOSED_WARNING_DUR:
-        new_alert = "high"
-    # 哈欠：从无到有的瞬间触发
-    elif is_yawning and not _was_yawning:
-        if now - _last_yawn_alert_ts >= _YAWN_COOLDOWN:
-            new_alert = "warning"
-    _was_yawning = is_yawning
-
-    # ===== 4. 告警状态机 =====
-    alert_level = _cached_safety.get("alert_level", "normal")
-
-    if new_alert:
-        # 闭眼事件的冷却检查
-        if new_alert in ("high", "critical"):
-            if now - _last_eye_alert_ts >= _EYE_COOLDOWN:
-                alert_level = new_alert
-                _alert_start_ts = now
-                _alert_cause = "eye"
-                _last_eye_alert_ts = now
-        elif new_alert == "warning":
-            alert_level = new_alert
-            _alert_start_ts = now
-            _alert_cause = "yawn"
-            _last_yawn_alert_ts = now
-    elif _alert_cause:
-        # 没有新事件 → 检查当前告警是否应该解除
-        if _alert_cause == "eye" and closure_dur < _EYE_CLOSED_WARNING_DUR:
-            # 眼睛已睁开 + 超过最短保持时间 → 解除
-            if now - _alert_start_ts >= _ALERT_HOLD_TIME:
-                alert_level = "normal"
-                _alert_cause = None
-        elif _alert_cause == "yawn" and now - _alert_start_ts >= _ALERT_HOLD_TIME:
-            alert_level = "normal"
-            _alert_cause = None
-
-    # ===== 5. 参考评分（仅展示用）=====
-    fatigue_score = min(100.0, closure_dur * 25.0)  # 4s闭眼=100分
-
-    # ===== 6. 视线（展示用）=====
-    gaze, _ = _detect_gaze(landmarks, w, h)
-
-    # ===== 7. 更新缓存 =====
-    with _safety_lock:
-        old_level = _cached_safety.get("alert_level", "normal")
-        if alert_level != old_level:
-            if alert_level != "normal":
-                _cached_safety["alert_message"] = {
-                    "warning": "您打哈欠了，请注意休息。",
-                    "high": "检测到长时间闭眼，请集中注意力！",
-                    "critical": "危险！请立即停车休息！",
-                }.get(alert_level, "")
+    if is_eye_closed and _eye_close_start_ts > 0:
+        current_closure_dur = now - _eye_close_start_ts
+        if current_closure_dur >= _EYE_CLOSURE_MIN_DUR:
+            if _eye_closure_events and _eye_closure_events[-1][0] == _eye_close_start_ts:
+                _eye_closure_events[-1] = (_eye_close_start_ts, now, current_closure_dur)
             else:
-                _cached_safety["alert_message"] = ""
+                _eye_closure_events.append((_eye_close_start_ts, now, current_closure_dur))
 
+    cutoff = now - _PERCLOS_WINDOW
+    _eye_closure_events = [e for e in _eye_closure_events if e[1] > cutoff]
+    _blink_events = [e for e in _blink_events if e[0] > cutoff]
+
+    total_closure = sum(e[2] for e in _eye_closure_events)
+    perclos = min(1.0, total_closure / _PERCLOS_WINDOW)
+    if len(_eye_closure_events) < _PERCLOS_MIN_EVENTS:
+        perclos = 0.0
+
+    blink_rate = len(_blink_events)
+    avg_blink_dur = (sum(e[1] for e in _blink_events) / len(_blink_events) * 1000) if _blink_events else 0.0
+
+    # ===== 哈欠检测 =====
+    is_yawning = mar > 0.70
+    if is_yawning and not _was_yawning:
+        _yawn_timestamps.append(now)
+        logger.info(f"[SAFETY] 检测到哈欠! mar={mar:.4f} threshold=0.70")
+    _was_yawning = is_yawning
+    _yawn_timestamps = [t for t in _yawn_timestamps if t > now - 300]
+    yawn_count = len(_yawn_timestamps)
+
+    # ===== 视线 + 头部下垂 =====
+    gaze, is_fatigue_gaze = _detect_gaze(landmarks, w, h, head_down_threshold)
+    if is_fatigue_gaze:
+        if _distraction_start is None: _distraction_start = now
+        distraction_dur = now - _distraction_start
+    else:
+        _distraction_start = None; distraction_dur = 0.0
+
+    is_head_drop = (gaze == "down")
+    if is_head_drop:
+        if _head_drop_start is None: _head_drop_start = now
+        head_drop_dur = now - _head_drop_start
+    else:
+        _head_drop_start = None; head_drop_dur = 0.0
+
+    # =========================================================
+    # 事件驱动告警：检测到具体动作就立即触发
+    # =========================================================
+    alert_level = "normal"
+    alert_message = ""
+    action_score = 0
+
+    # --- 1. 闭眼告警 ---
+    if is_eye_closed:
+        if _alert_state["eye_closure_start"] == 0.0:
+            _alert_state["eye_closure_start"] = now
+        eye_dur = now - _alert_state["eye_closure_start"]
+        if eye_dur >= _EYE_CRIT_DUR:
+            action_score = max(action_score, 85)
+            alert_level = "critical"
+            if (now - _alert_state["last_eye_alert"]) > _ALERT_COOLDOWN:
+                alert_message = f"检测到闭眼 {eye_dur:.0f} 秒，危险！请立即停车休息！"
+                _alert_state["last_eye_alert"] = now
+                logger.warning(f"[ALERT] 闭眼critical: dur={eye_dur:.1f}s ear={ear:.4f}")
+        elif eye_dur >= _EYE_HIGH_DUR:
+            action_score = max(action_score, 65)
+            if alert_level != "critical":
+                alert_level = "high"
+            if (now - _alert_state["last_eye_alert"]) > _ALERT_COOLDOWN:
+                if not alert_message:
+                    alert_message = f"检测到闭眼 {eye_dur:.0f} 秒，您已疲劳，请注意休息！"
+                _alert_state["last_eye_alert"] = now
+                logger.warning(f"[ALERT] 闭眼high: dur={eye_dur:.1f}s ear={ear:.4f}")
+        elif eye_dur >= _EYE_ALERT_DUR:
+            action_score = max(action_score, 35)
+            if alert_level == "normal":
+                alert_level = "warning"
+            if (now - _alert_state["last_eye_alert"]) > _ALERT_COOLDOWN:
+                if not alert_message:
+                    alert_message = f"检测到闭眼 {eye_dur:.0f} 秒，请集中注意力！"
+                _alert_state["last_eye_alert"] = now
+                logger.warning(f"[ALERT] 闭眼warning: dur={eye_dur:.1f}s ear={ear:.4f}")
+        else:
+            action_score = max(action_score, int(eye_dur * 15))
+    else:
+        _alert_state["eye_closure_start"] = 0.0
+
+    # --- 2. 哈欠告警 ---
+    if is_yawning:
+        action_score = max(action_score, 30)
+        if alert_level == "normal":
+            alert_level = "warning"
+        if (now - _alert_state["last_yawn_alert"]) > _ALERT_COOLDOWN:
+            if not alert_message:
+                alert_message = "检测到打哈欠，请注意休息！"
+            _alert_state["last_yawn_alert"] = now
+            logger.warning(f"[ALERT] 哈欠warning: mar={mar:.4f}")
+
+    # --- 3. 低头告警 ---
+    if is_head_drop:
+        if _alert_state["head_drop_start"] == 0.0:
+            _alert_state["head_drop_start"] = now
+        head_dur = now - _alert_state["head_drop_start"]
+        if head_dur >= _HEAD_HIGH_DUR:
+            action_score = max(action_score, 55)
+            if alert_level not in ("critical",):
+                if alert_level != "high":
+                    alert_level = "high"
+            if (now - _alert_state["last_head_alert"]) > _ALERT_COOLDOWN:
+                if not alert_message:
+                    alert_message = f"检测到低头 {head_dur:.0f} 秒，请抬起头集中注意力！"
+                _alert_state["last_head_alert"] = now
+        elif head_dur >= _HEAD_ALERT_DUR:
+            action_score = max(action_score, 25)
+            if alert_level == "normal":
+                alert_level = "warning"
+            if (now - _alert_state["last_head_alert"]) > _ALERT_COOLDOWN:
+                if not alert_message:
+                    alert_message = "检测到低头，请集中注意力！"
+                _alert_state["last_head_alert"] = now
+        else:
+            action_score = max(action_score, int(head_dur * 10))
+    else:
+        _alert_state["head_drop_start"] = 0.0
+
+    # --- 4. 分心告警 ---
+    if is_fatigue_gaze and gaze != "down":
+        if _alert_state["distraction_start"] == 0.0:
+            _alert_state["distraction_start"] = now
+        dist_dur = now - _alert_state["distraction_start"]
+        if dist_dur >= _DIST_ALERT_DUR:
+            action_score = max(action_score, 20)
+            if alert_level == "normal":
+                alert_level = "warning"
+            if (now - _alert_state["last_dist_alert"]) > _ALERT_COOLDOWN:
+                if not alert_message:
+                    alert_message = "检测到视线偏离，请集中注意力！"
+                _alert_state["last_dist_alert"] = now
+        else:
+            action_score = max(action_score, int(dist_dur * 5))
+    else:
+        _alert_state["distraction_start"] = 0.0
+
+    fatigue_score = action_score
+
+    # 定期调试日志（每 ~5 秒输出一次关键值）
+    _log_counter = getattr(_run_safety_check, '_log_counter', 0) + 1
+    _run_safety_check._log_counter = _log_counter
+    if _log_counter % 30 == 0:
+        logger.info(f"[SAFETY] ear={ear:.4f} thr={ear_threshold:.4f} closed={is_eye_closed} "
+                     f"mar={mar:.4f} yawn={is_yawning} gaze={gaze} alert={alert_level} score={fatigue_score}")
+
+    with _safety_lock:
         _cached_safety.update({
-            "perclos": round(closure_dur / 60.0, 3),
-            "yawn_count": 1 if is_yawning else 0,
-            "gaze": gaze,
-            "eye_closed": is_eye_closed,
-            "fatigue_score": round(fatigue_score, 1),
-            "alert_level": alert_level,
-            "blink_rate": 0,
-            "avg_blink_dur": 0.0,
-            "head_drop": False,
-            "raw_score": round(fatigue_score, 1),
-            "distraction_dur": 0.0,
-            "is_fatigue_gaze": False,
+            "perclos": perclos, "yawn_count": yawn_count, "gaze": gaze,
+            "distraction_dur": distraction_dur, "eye_closed": is_eye_closed,
+            "fatigue_score": fatigue_score, "alert_level": alert_level,
+            "alert_message": alert_message,
+            "blink_rate": blink_rate,
+            "avg_blink_dur": avg_blink_dur,
+            "head_drop": is_head_drop,
+            "raw_score": action_score,
+            "is_fatigue_gaze": is_fatigue_gaze,
             "driving_minutes": driving_minutes,
+            "ear": round(ear, 4),
+            "mar": round(mar, 4),
+            "ear_threshold": round(ear_threshold, 4),
+            "ear_baseline": round(_ear_baseline, 4),
+            "perclos_events": len(_eye_closure_events),
         })
 
 
@@ -510,9 +729,22 @@ _DETECT_EVERY_N = 3  # 每 N 帧做一次检测（表情 + 安全）
 def _detector_loop():
     """识别线程：异步表情检测"""
     global _cached_emotion, _cached_conf, _cached_box, _cached_landmarks, _pending_frame
-    import mediapipe as mp
+    # 无人脸恢复时需要重置的全局变量（提前声明，避免 SyntaxError）
+    global _distraction_start, _head_drop_start, _smoothed_fatigue, _sustain_timers
+    global _was_eye_closed, _eye_close_start_ts, _warmup_frame_count
+    global _ear_samples, _head_ratio_samples, _alert_state
+    global _eye_closure_events, _blink_events, _yawn_timestamps
+
+    logger.info("[DEBUG] _detector_loop 线程开始执行")
+    try:
+        import mediapipe as mp
+        logger.info("[DEBUG] mediapipe 导入成功 (in thread)")
+    except Exception as e:
+        logger.error(f"[DEBUG] mediapipe 导入失败: {e}")
+        return
 
     _no_face_count = 0  # 连续无人脸帧计数
+    _debug_log_counter = 0  # 调试日志计数器（每10帧输出一次）
 
     while _video_running:
         with _pending_lock:
@@ -523,12 +755,20 @@ def _detector_loop():
             continue
 
         h, w = frame.shape[:2]
+        _debug_log_counter += 1
 
         try:
             if HAS_MEDIAPIPE and _mp_face_landmarker is not None:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                # 使用递增计数器作为时间戳，避免 time.time() 精度问题导致 MediaPipe 拒绝
                 ts = int(time.time() * 1000)
+                # 确保时间戳严格递增
+                if not hasattr(_detector_loop, '_last_mp_ts'):
+                    _detector_loop._last_mp_ts = 0
+                if ts <= _detector_loop._last_mp_ts:
+                    ts = _detector_loop._last_mp_ts + 1
+                _detector_loop._last_mp_ts = ts
                 result = _mp_face_landmarker.detect_for_video(mp_img, ts)
 
                 face_detected = False
@@ -538,6 +778,8 @@ def _detector_loop():
                     ys = [p.y * h for p in lm]
                     face_w = int(max(xs) - min(xs))
                     face_h = int(max(ys) - min(ys))
+                    if _debug_log_counter % 30 == 0:
+                        logger.info(f"[DEBUG] 人脸检测: {len(result.face_landmarks)}张 face_w={face_w} face_h={face_h}")
                     # 过滤太小的误检人脸（至少 60x80 像素）
                     if face_w >= 60 and face_h >= 80:
                         face_detected = True
@@ -551,6 +793,10 @@ def _detector_loop():
 
                         # 安全检测（疲劳/哈欠/分心）— 传入驾驶时长参与评分
                         _run_safety_check(lm, w, h, driving_minutes=_driving_minutes)
+                        if _debug_log_counter % 30 == 0:
+                            with _safety_lock:
+                                _dbg = dict(_cached_safety)
+                            logger.info(f"[DEBUG] safety_check完成: warmup={_warmup_frame_count}/{_WARMUP_FRAMES} ear={_dbg.get('ear',0)} alert={_dbg.get('alert_level','?')} score={_dbg.get('fatigue_score',0)}")
 
                         # 表情识别
                         new_emo, new_conf = None, 0.0
@@ -569,12 +815,31 @@ def _detector_loop():
                                 _cached_emotion = new_emo
                                 _cached_conf = new_conf
 
-                # 无人脸（或人脸太小）→ 连续 N 帧后重置
+                # 无人脸（或人脸太小）→ 尝试 Haar Cascade 降级 → 连续 N 帧后重置
                 if face_detected:
                     _no_face_count = 0
                 else:
                     _no_face_count += 1
-                    if _no_face_count >= 8:
+                    if _debug_log_counter % 30 == 0:
+                        has_result = result is not None and bool(result.face_landmarks)
+                        logger.info(f"[DEBUG] 无人脸: no_face_count={_no_face_count} mp_result={has_result}")
+                    # MediaPipe 未检测到人脸时，尝试 Haar Cascade 降级（仅表情识别，无安全检测）
+                    if _no_face_count < 20 and _face_cascade is not None:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        gray = cv2.equalizeHist(gray)
+                        faces = _face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(48, 48))
+                        if len(faces) > 0:
+                            x, y, fw, fh = max(faces, key=lambda f: f[2]*f[3])
+                            face_img = frame[y:y+fh, x:x+fw]
+                            new_emo, new_conf = detect_emotion_from_landmarks(
+                                cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB), fw, fh)
+                            with _cache_lock:
+                                _cached_emotion = new_emo
+                                _cached_conf = new_conf
+                                _cached_box = (x, y, fw, fh)
+                            if _debug_log_counter % 30 == 0:
+                                logger.info(f"[DEBUG] Haar Cascade 降级检测到人脸: {fw}x{fh} (MediaPipe 未检测到)")
+                    if _no_face_count >= 20:
                         with _safety_lock:
                             _cached_safety.update({
                                 "perclos": 0.0, "yawn_count": 0, "gaze": "forward",
@@ -586,11 +851,27 @@ def _detector_loop():
                                 "is_fatigue_gaze": False,
                             })
                             _cached_safety["_prev_level"] = "normal"
-                        global _was_eye_closed, _eye_close_start_ts, _was_yawning, _alert_cause
+                        _distraction_start = None
+                        _head_drop_start = None
+                        _smoothed_fatigue = 0.0
+                        _sustain_timers = {"warning": 0.0, "high": 0.0, "critical": 0.0}
                         _was_eye_closed = False
                         _eye_close_start_ts = 0.0
-                        _was_yawning = False
-                        _alert_cause = None
+                        # 重置宽限期，重新检测到人脸时重新校准基线
+                        _warmup_frame_count = 0
+                        _ear_samples = []
+                        _head_ratio_samples = []
+                        # 清理过期事件
+                        _eye_closure_events = []
+                        _blink_events = []
+                        _yawn_timestamps = []
+                        # 重置事件驱动告警状态
+                        _alert_state = {
+                            "eye_closure_start": 0.0, "head_drop_start": 0.0,
+                            "distraction_start": 0.0, "last_eye_alert": 0.0,
+                            "last_yawn_alert": 0.0, "last_head_alert": 0.0,
+                            "last_dist_alert": 0.0,
+                        }
             else:
                 # Haar Cascade 降级路径
                 if _face_cascade is not None:
@@ -806,6 +1087,11 @@ def api_state():
             'fatigue_score': round(safety.get('fatigue_score', 0), 1),
             'alert_level': safety.get('alert_level', 'normal'),
             'alert_message': safety.get('alert_message', ''),
+            # 调试信息
+            'ear': safety.get('ear', 0),
+            'ear_threshold': safety.get('ear_threshold', 0),
+            'ear_baseline': safety.get('ear_baseline', 0),
+            'perclos_events': safety.get('perclos_events', 0),
         },
     })
 

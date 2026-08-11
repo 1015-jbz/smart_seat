@@ -1,7 +1,26 @@
 @echo off
 cd /d "%~dp0"
 
-set PY=%~dp0backend\.venv\Scripts\python.exe
+REM === 检测 Python 路径 ===
+REM 优先使用虚拟环境，不存在则回退到系统 Python
+set VENV_PY=%~dp0backend\.venv\Scripts\python.exe
+if exist "%VENV_PY%" (
+    set PY=%VENV_PY%
+    echo [INFO] Using venv Python: %VENV_PY%
+) else (
+    where python >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] Python not found! Please install Python 3.10+ or run setup.bat
+        pause
+        exit /b 1
+    )
+    for /f "delims=" %%i in ('where python') do (
+        set PY=%%i
+        goto found_py
+    )
+    :found_py
+    echo [INFO] Using system Python: %PY%
+)
 
 echo === Smart Cockpit - Starting... ===
 

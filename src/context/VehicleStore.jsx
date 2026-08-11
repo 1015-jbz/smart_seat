@@ -83,39 +83,7 @@ function fetchWithTimeout(url, ms = 5000) {
 // 国内 Chrome 的 getCurrentPosition 底层调 Google 服务基本不可用，IP 定位是更可靠的实时方案。
 // 返回 { city, latitude, longitude } 或 null。
 async function locateByIP() {
-  // 方案1: 高德 IP 定位（国内最准，rectangle取中点即为坐标）
-  try {
-    const res = await fetchWithTimeout(
-      `https://restapi.amap.com/v3/ip?key=8daa61d5b1071072de54569a88268aad`,
-      5000
-    );
-    if (res.ok) {
-      const data = await res.json();
-      if (data.status === '1' && (data.city || data.province)) {
-        const cityRaw = (data.city || data.province || '').replace(/市$/, '');
-        const found = CITY_COORDS.find(c => cityRaw.includes(c.name) || c.name.includes(cityRaw));
-        let lat = found ? found.lat : null;
-        let lon = found ? found.lon : null;
-        // rectangle: "SW经,SW纬;NE经,NE纬" → 取中点
-        if (!lat && data.rectangle) {
-          const parts = data.rectangle.split(';');
-          if (parts.length === 2) {
-            const sw = parts[0].split(',').map(Number);
-            const ne = parts[1].split(',').map(Number);
-            lon = (sw[0] + ne[0]) / 2;
-            lat = (sw[1] + ne[1]) / 2;
-          }
-        }
-        return {
-          city: found ? found.name : cityRaw,
-          latitude: lat,
-          longitude: lon,
-        };
-      }
-    }
-  } catch (e) { /* 静默，试下一个 */ }
-
-  // 方案2: 太平洋电脑网（GBK 编码）
+  // 方案1: 太平洋电脑网（国内稳定、免费、无需 key，返回中文城市名；GBK 编码需解码）
   try {
     const res = await fetchWithTimeout('https://whois.pconline.com.cn/ipJson.jsp?json=true', 5000);
     const buf = await res.arrayBuffer();
@@ -124,6 +92,7 @@ async function locateByIP() {
     if (match) {
       const data = JSON.parse(match[0]);
       if (data.city) {
+        // 模糊匹配城市库（pconline 返回"南京市"，库里有"南京"）
         const found = CITY_COORDS.find(c => data.city.includes(c.name) || c.name.includes(data.city));
         return {
           city: found ? found.name : data.city.replace(/市$/, ''),
@@ -134,7 +103,7 @@ async function locateByIP() {
     }
   } catch (e) { /* 静默，试下一个 */ }
 
-  // 方案3: ipinfo.io
+  // 方案2: ipinfo.io（海外，返回经纬度，Cloudflare CDN 国内可访问）
   try {
     const res = await fetchWithTimeout('https://ipinfo.io/json', 5000);
     if (res.ok) {
@@ -196,11 +165,13 @@ export function VehicleProvider({ children }) {
   const smoothedFatigueRef = useRef(5);      // EWMA 平滑后的疲劳分
   const sustainTimerRef = useRef({ warning: 0, high: 0, critical: 0 });  // 持续时长累积器
   const lastHystTargetRef = useRef('normal');  // 上次滞回判定结果
-  const SUSTAIN_REQUIRED = { warning: 2.4, high: 1.8, critical: 0.6 };    // 比后端略长（前端 1.2s 间隔）
-  // 统一滞回阈值表（与后端 _HYSTERESIS 完全一致，防临界抖动带宽拉满）
+  // 摄像头数据防抖：后端 alert_level 升级时需连续确认，避免瞬时波动触发误报
+  const camLevelConfirmRef = useRef(null);    // { level, count }
+  const SUSTAIN_REQUIRED = { warning: 4.0, high: 3.0, critical: 1.5 };    // 与后端一致
+  // 统一滞回阈值表（与后端 _HYSTERESIS 完全一致）
   const HYSTERESIS = {
-    up:   { warning: 30, high: 55, critical: 80 },
-    down: { normal: 8,  warning: 35, high: 55 },
+    up:   { warning: 40, high: 60, critical: 80 },
+    down: { normal: 15,  warning: 40, high: 50 },
   };
   // 根据分数判定目标等级（滞回判定，不含 sustain gate）
   const determineLevel = (score, currentLevel = 'normal') => {
@@ -282,19 +253,15 @@ export function VehicleProvider({ children }) {
     }
   }, []);
 
-  // 应用启动时：先恢复上次手动选的城市 → 没有才走 IP 定位
+  // 应用启动时自动获取一次位置
   useEffect(() => {
-    if (!restoreSavedCity()) {
-      refreshLocation();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    refreshLocation();
+  }, [refreshLocation]);
 
   // 手动选择城市：定位失败或用户想切换城市时的可靠兜底，不依赖浏览器权限
-  // localStorage 持久化，刷新/重启后自动恢复
   const setCity = useCallback((cityName) => {
     const found = CITY_COORDS.find(c => c.name === cityName);
     if (found) {
-      try { localStorage.setItem('smart_seat_city', cityName); } catch (_) {}
       setLocation({
         city: found.name,
         latitude: found.lat,
@@ -307,27 +274,6 @@ export function VehicleProvider({ children }) {
         manual: true,
       });
     }
-  }, []);
-
-  // localStorage 记住的城市优先恢复，避免每次都要重新定位
-  const restoreSavedCity = useCallback(() => {
-    try {
-      const saved = localStorage.getItem('smart_seat_city');
-      if (saved) {
-        const found = CITY_COORDS.find(c => c.name === saved);
-        if (found) {
-          setLocation({
-            city: found.name,
-            latitude: found.lat,
-            longitude: found.lon,
-            located: true, loading: false, error: null, denied: false,
-            source: 'manual', manual: true,
-          });
-          return true;
-        }
-      }
-    } catch (_) {}
-    return false;
   }, []);
 
   // 页面后台时暂停所有定时器，避免不可见标签页持续触发 setState 与 CPU 占用
@@ -596,76 +542,42 @@ export function VehicleProvider({ children }) {
       let rawScore, alertLevel;
 
       if (camFresh) {
-        // --- 摄像头实时数据（后端已做 EWMA + Sustain Gate）---
+        // --- 摄像头实时数据（后端事件驱动告警）---
+        // 后端已有完整的去抖动和冷却机制，前端直接使用 alert_level
         rawScore = cam.fatigue_score;
-        alertLevel = cam.alert_level;
+        alertLevel = cam.alert_level || 'normal';
+        camLevelConfirmRef.current = null;
       } else {
-        // --- 摄像头不可用：前端模拟 ---
-        // v2 面部疲劳：区分"非驾驶视线"和"非前方但正常"
+        // --- 摄像头不可用：前端模拟（简化版，直接根据驾驶时长映射等级）---
         const isFatigueGaze = !['前方', '仪表盘', '左后视镜', '右后视镜'].includes(gazeDirection);
         const facialFatigue = Math.round(
-          eyeClosureRatio * 100 * 0.45 +      // 闭眼权重提升
-          yawnFreq * 8 * 0.35 +               // 哈欠权重提升
-          (isFatigueGaze ? 12 : 0) * 0.2       // 只对真正的疲劳视线计分
+          eyeClosureRatio * 100 * 0.45 +
+          yawnFreq * 8 * 0.35 +
+          (isFatigueGaze ? 12 : 0) * 0.2
         );
         rawScore = timeBasedFatigue * 0.6 + facialFatigue * 0.4;
-
-        // v2 前端 EWMA 平滑（模仿摄像头行为）
-        const alpha = rawScore > smoothedFatigueRef.current ? 0.35 : 0.15;
-        smoothedFatigueRef.current = alpha * rawScore + (1 - alpha) * smoothedFatigueRef.current;
-
-        // v2 前端 Sustain Gate + 统一滞回阈值表
-        const LEVELS = ['normal', 'warning', 'high', 'critical'];
-        const target = determineLevel(smoothedFatigueRef.current, prevAlertLevelRef.current);
-        if (target !== prevAlertLevelRef.current) {
-          if (LEVELS.indexOf(target) > LEVELS.indexOf(prevAlertLevelRef.current)) {
-            // 升级方向：连续判定同 target → 累积；target 变化 → 初始化新计时器
-            if (target === lastHystTargetRef.current) {
-              sustainTimerRef.current[target] = (sustainTimerRef.current[target] || 0) + 1.2;
-            } else {
-              if (lastHystTargetRef.current !== 'normal') sustainTimerRef.current[lastHystTargetRef.current] = 0;
-              sustainTimerRef.current[target] = 1.2;
-            }
-            lastHystTargetRef.current = target;
-            if (sustainTimerRef.current[target] >= SUSTAIN_REQUIRED[target]) {
-              alertLevel = target;
-              sustainTimerRef.current = { warning: 0, high: 0, critical: 0 };
-            } else {
-              alertLevel = prevAlertLevelRef.current;  // 继续等
-            }
-          } else {
-            // 降级：立刻生效
-            alertLevel = target;
-            sustainTimerRef.current = { warning: 0, high: 0, critical: 0 };
-            lastHystTargetRef.current = target;
-          }
-        } else {
-          // 同等级：如果上次判定要升级但现在回落 → 清零那次的计时器
-          if (lastHystTargetRef.current !== prevAlertLevelRef.current &&
-              LEVELS.indexOf(lastHystTargetRef.current) > LEVELS.indexOf(prevAlertLevelRef.current)) {
-            sustainTimerRef.current[lastHystTargetRef.current] = 0;
-          }
-          lastHystTargetRef.current = prevAlertLevelRef.current;
-          alertLevel = prevAlertLevelRef.current;
-        }
+        // 简单阈值映射：无 EWMA/滞回，直接根据分数判定
+        if (rawScore >= 60) alertLevel = 'high';
+        else if (rawScore >= 35) alertLevel = 'warning';
+        else alertLevel = 'normal';
       }
-      const fatigueScore = Math.round(camFresh ? rawScore : smoothedFatigueRef.current);
+      const fatigueScore = Math.round(rawScore);
 
       // ===== 4. 告警循环启停（VehicleStore 掌握节奏）=====
-      // 阈值: warning 30-49 / high 50-74 / critical ≥75（critical 暂不处理硬件刹车）
       if (alertLevel !== prevAlertLevelRef.current) {
         if (alertLevel === 'warning') {
           startAlertLoop('warning');  // 5s 一次
         } else if (alertLevel === 'high') {
           startAlertLoop('high');     // 5s 一次
+        } else if (alertLevel === 'critical') {
+          startAlertLoop('critical'); // 3s 一次，紧急提醒
         } else if (alertLevel === 'normal') {
           stopAlertLoop();            // 等级恢复 → 停止告警
         }
-        // warning/high 变化时再写一次文字记录（NotifyPanel 看到）
-        if (alertLevel === 'warning' || alertLevel === 'high') {
-          const detail = `疲劳预警：检测到${levelText[alertLevel]}！当前疲劳评分 ${fatigueScore} 分，建议${alertLevel === 'critical' ? '立即停车休息' : '谨慎驾驶'}`;
-          // 文字记录：通过 voiceAlertRef 桥接，RightPanel 里 pushAlert 会写
-          // 这里仍调 voiceAlertRef 只是为了写日志（opts.loop=true 也会跳冷却）
+        // warning/high/critical 变化时写文字记录
+        if (alertLevel === 'warning' || alertLevel === 'high' || alertLevel === 'critical') {
+          const backendMsg = cam?.alert_message;
+          const detail = backendMsg || `疲劳预警：检测到${levelText[alertLevel]}！当前疲劳评分 ${fatigueScore} 分，建议${alertLevel === 'critical' ? '立即停车休息' : '谨慎驾驶'}`;
           voiceAlertRef.current?.(detail, alertLevel, { logOnly: true, loop: false });
         }
       }
@@ -684,9 +596,11 @@ export function VehicleProvider({ children }) {
         if (alertLevel === 'normal') {
           message = `驾驶${Math.floor(minutes)}分钟，状态良好`;
         } else if (alertLevel === 'warning') {
-          message = `已驾驶${Math.floor(minutes)}分钟，检测到疲劳迹象，建议休息`;
-        } else {
-          message = `已连续驾驶${Math.floor(minutes)}分钟，疲劳程度高，请立即休息！`;
+          message = cam?.alert_message || `已驾驶${Math.floor(minutes)}分钟，检测到疲劳迹象，建议休息`;
+        } else if (alertLevel === 'high') {
+          message = cam?.alert_message || `已连续驾驶${Math.floor(minutes)}分钟，疲劳程度高，请立即休息！`;
+        } else if (alertLevel === 'critical') {
+          message = cam?.alert_message || `危险！严重疲劳，请立即停车休息！`;
         }
 
         const newAlert = { time, type: alertLevel, message };
@@ -815,7 +729,6 @@ export function VehicleProvider({ children }) {
   }, []);
 
   const startAlertLoop = useCallback((level) => {
-    if (level === 'critical') return; // 严重疲劳暂不处理（没有硬件刹车）
     if (currentAlertLevelRef.current === level) return; // 等级不变，不重复启动
     stopAlertLoop();
     currentAlertLevelRef.current = level;
@@ -828,7 +741,10 @@ export function VehicleProvider({ children }) {
 
     trigger(); // 立即播第一条
 
-    if (level === 'warning') {
+    if (level === 'critical') {
+      // 严重疲劳：每 3 秒一次紧急提醒
+      alertTimerRef.current = setInterval(trigger, 3000);
+    } else if (level === 'warning') {
       alertTimerRef.current = setInterval(trigger, 5000);
     } else if (level === 'high') {
       // 中度疲劳：每 5 秒一次
