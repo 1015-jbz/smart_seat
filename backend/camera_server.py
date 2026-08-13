@@ -463,8 +463,17 @@ def _run_safety_check(landmarks, w, h, driving_minutes=0.0):
             alert_level = "normal"
             _alert_cause = None
 
-    # ===== 5. 参考评分（仅展示用）=====
-    fatigue_score = min(100.0, closure_dur * 25.0)  # 4s闭眼=100分
+    # ===== 5. 参考评分（仅展示用，分层值，不跳满100）=====
+    # 参考 PR 分层：闭眼 warning≈35 / high=65 / critical=85，哈欠=30
+    fatigue_score = 0.0
+    if closure_dur >= _EYE_CLOSED_CRITICAL_DUR:
+        fatigue_score = 85.0                    # 重度闭眼（≥4s）
+    elif closure_dur >= _EYE_CLOSED_WARNING_DUR:
+        fatigue_score = 65.0                    # 中度闭眼（≥2s）
+    elif closure_dur > 0:
+        fatigue_score = min(35.0, closure_dur * 15.0)  # 刚闭眼，缓慢爬升
+    if is_yawning:
+        fatigue_score = max(fatigue_score, 30.0)       # 哈欠
 
     # ===== 6. 视线（展示用）=====
     gaze, _ = _detect_gaze(landmarks, w, h)
