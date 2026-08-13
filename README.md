@@ -7,10 +7,10 @@
 | 模块 | 说明 |
 |------|------|
 | 🚗 仪表盘 | 实时车速/转速/油量/胎压/水温，WebSocket 推送 |
-| 😴 疲劳检测 | MediaPipe 468 关键点 → EAR/MAR/PERCLOS → 疲劳评分 + 告警 |
+| 😴 疲劳检测 | MediaPipe 468 关键点 → EAR/MAR，事件驱动告警（哈欠→轻度，闭眼→中/重度）+ 分层参考评分 |
 | 😊 表情识别 | ONNX EfficientNet-B2 7 类情绪分类 + MediaPipe 规则引擎双引擎 |
 | 🎤 语音助手 | 唤醒词"小龙" + 浏览器原生 ASR + DeepSeek AI 对话 |
-| 🌤 天气 | Open-Meteo 免费 API，支持全国 30+ 城市 |
+| 🌤 天气 | Open-Meteo 免费 API，高德 IP 定位 + 手动选城（localStorage 记忆），支持全国 30+ 城市 |
 | 🛡 安全驾驶 | 分心检测、哈欠计数、视线偏离、疲劳事件记录 |
 
 ## 环境要求
@@ -164,7 +164,7 @@ smart_seat/
     │                           │
     │                           ├── DeepSeek API（AI 对话）
     │                           ├── Open-Meteo（天气）
-    │                           └── pconline / ipinfo（IP 定位）
+    │                           └── 高德 / pconline / ipinfo（IP 定位）
     │
     ├── :7861/video_feed ──→ Flask 摄像头 ──→ USB 摄像头
     │       /api/state              │
