@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Loader2, ChevronDown } from 'lucide-react';
+import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2, Loader2 } from 'lucide-react';
 import { voiceSettings } from '../data/mockData';
 import { useVehicle } from '../context/VehicleStore';
 import { useVoice } from '../context/VoiceStore';
@@ -12,15 +12,6 @@ const nowHHMM = () => {
 };
 
 const QUICK_COMMANDS = ['小龙', '导航到北京站', '播放流行音乐', '温度调到24度', '打开全部车窗', '明天天气', '打电话给张三'];
-
-const EMOTION_ZH = {
-  happy: '开心', sad: '悲伤', angry: '愤怒', surprised: '惊讶',
-  fearful: '恐惧', neutral: '平静', disgusted: '厌恶', fatigue: '疲劳',
-};
-const EMOTION_COLORS = {
-  happy: '#f472b6', sad: '#60a5fa', angry: '#ef4444', surprised: '#fbbf24',
-  fearful: '#a78bfa', neutral: '#34d399', disgusted: '#84cc16', fatigue: '#fb923c',
-};
 
 function AudioVisualizer({ analyser, isActive }) {
   const canvasRef = useRef(null);
@@ -60,11 +51,11 @@ function AudioVisualizer({ analyser, isActive }) {
 
 export default function VoiceAssistant() {
   const { username } = useOutletContext();
-  const { location, camEmotion, camSafety } = useVehicle();
+  const { location } = useVehicle();
   const {
     messages, pushMessage, clearMessages, enqueueSpeech,
     voicePhase, setVoicePhase, audioLevel, setAudioLevel,
-    setVoiceSettings, setEmotion,
+    setVoiceSettings,
   } = useVoice();
 
   const [inputText, setInputText] = useState('');
@@ -75,26 +66,12 @@ export default function VoiceAssistant() {
   const [speechSupported, setSpeechSupported] = useState(false);
   const [interimText, setInterimText] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
 
+  // ===== 同步语音设置到 VoiceStore（驱动 TTS 音色切换）=====
   useEffect(() => {
     setVoiceSettings(settings);
   }, [settings, setVoiceSettings]);
 
-  useEffect(() => {
-    if (camSafety?.alertLevel && camSafety.alertLevel !== 'normal') {
-      setEmotion('fatigue');
-      return;
-    }
-    const rawEmotion = camEmotion?.label || camEmotion || 'neutral';
-    setEmotion(rawEmotion);
-  }, [camEmotion, camSafety, setEmotion]);
-
-  const currentEmotionRaw = (camSafety?.alertLevel && camSafety.alertLevel !== 'normal') ? 'fatigue' : (camEmotion?.label || 'neutral');
-  const currentEmotionZh = EMOTION_ZH[currentEmotionRaw] || '平静';
-  const currentEmotionColor = EMOTION_COLORS[currentEmotionRaw] || '#34d399';
-
-  const chatScrollRef = useRef(null);
   const chatEndRef = useRef(null);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -109,22 +86,9 @@ export default function VoiceAssistant() {
     setSpeechSupported(!!SR);
   }, []);
 
-  // 自动滚动到底部
-  const scrollToBottom = useCallback((smooth = true) => {
-    chatEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'instant' });
-  }, []);
-
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
-
-  // 检测滚动位置，显示/隐藏"回到底部"按钮
-  const handleScroll = useCallback(() => {
-    const el = chatScrollRef.current;
-    if (!el) return;
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setShowScrollBtn(distFromBottom > 150);
-  }, []);
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   useEffect(() => {
     return () => {
@@ -325,18 +289,9 @@ export default function VoiceAssistant() {
 
   const formatRecTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
-  // 判断是否是时间分隔线（连续消息间隔 > 5 分钟时显示时间）
-  const shouldShowTime = (msg, prevMsg) => {
-    if (!prevMsg) return true;
-    const [h1, m1] = prevMsg.time.split(':').map(Number);
-    const [h2, m2] = msg.time.split(':').map(Number);
-    const diff = (h2 * 60 + m2) - (h1 * 60 + m1);
-    return diff > 5;
-  };
-
   return (
-    <div className="animate-fade-in flex flex-col" style={{ height: 'calc(100vh - 80px)' }}>
-      <div className="mb-4 flex items-center justify-between flex-shrink-0">
+    <div className="animate-fade-in">
+      <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold mb-1 section-header" style={{ color: 'var(--color-text-main)' }}>智能语音对话</h1>
           <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
@@ -344,11 +299,6 @@ export default function VoiceAssistant() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full"
-            style={{ background: `${currentEmotionColor}15`, border: `1px solid ${currentEmotionColor}40` }}>
-            <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: currentEmotionColor }} />
-            <span className="text-xs font-medium" style={{ color: currentEmotionColor }}>情绪: {currentEmotionZh}</span>
-          </div>
           {voicePhase === 'tts' && (
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full"
               style={{ background: 'rgba(120,120,120,0.08)', border: '1px solid rgba(120,120,120,0.2)' }}>
@@ -373,120 +323,57 @@ export default function VoiceAssistant() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-5 flex-1" style={{ minHeight: 0 }}>
-        {/* ===== 聊天区域（微信风格） ===== */}
-        <div className="col-span-2 glass-card flex flex-col overflow-hidden">
-          {/* 顶栏 */}
-          <div className="flex items-center justify-between px-5 py-3 border-b flex-shrink-0" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+      <div className="grid grid-cols-3 gap-5" style={{ height: 'calc(100vh - 160px)' }}>
+        {/* 聊天区域 */}
+        <div className="col-span-2 glass-card p-5 flex flex-col">
+          <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <MessageCircle size={18} style={{ color: '#f472b6' }} />
               <h3 className="text-sm font-semibold">对话记录</h3>
-              <span className="text-xs ml-2" style={{ color: 'var(--color-text-muted)' }}>{messages.length} 条</span>
             </div>
             <div className="flex items-center gap-2">
               <span className={`status-dot ${speechSupported ? 'online' : 'offline'}`} />
               <span className="text-xs" style={{ color: speechSupported ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
-                {speechSupported ? '语音识别就绪' : '不支持语音识别'}
+                {speechSupported ? '语音识别就绪' : '浏览器不支持语音识别'}
               </span>
             </div>
           </div>
 
-          {/* 消息滚动区域 — 填满剩余空间 */}
-          <div
-            ref={chatScrollRef}
-            onScroll={handleScroll}
-            className="flex-1 overflow-y-auto px-5 py-4 space-y-1"
-            style={{ minHeight: 0, scrollBehavior: 'smooth' }}
-          >
-            {messages.map((msg, i) => {
-              const prevMsg = i > 0 ? messages[i - 1] : null;
-              const showTime = shouldShowTime(msg, prevMsg);
-              const isUser = msg.role === 'user';
-
-              return (
-                <div key={i}>
-                  {/* 时间分隔线 */}
-                  {showTime && (
-                    <div className="flex justify-center my-3">
-                      <span className="text-xs px-2 py-0.5 rounded-full" style={{ color: 'var(--color-text-muted)', background: 'rgba(255,255,255,0.04)' }}>
-                        {msg.time}
-                      </span>
-                    </div>
-                  )}
-                  {/* 消息气泡 */}
-                  <div className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'} animate-slide-in`}>
-                    {/* 头像 */}
-                    <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center" style={{
-                      background: isUser ? 'rgba(0,212,255,0.15)' : 'rgba(244,114,182,0.15)',
-                      border: `1px solid ${isUser ? 'rgba(0,212,255,0.2)' : 'rgba(244,114,182,0.2)'}`,
-                    }}>
-                      {isUser ? <User size={17} style={{ color: '#00d4ff' }} /> : <Bot size={17} style={{ color: '#f472b6' }} />}
-                    </div>
-                    {/* 气泡内容 */}
-                    <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`} style={{ maxWidth: '65%' }}>
-                      <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words ${
-                        isUser ? 'rounded-tr-md' : 'rounded-tl-md'
-                      }`} style={{
-                        background: isUser
-                          ? 'linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,255,136,0.08))'
-                          : 'rgba(255,255,255,0.06)',
-                        border: `1px solid ${isUser ? 'rgba(0,212,255,0.25)' : 'rgba(255,255,255,0.08)'}`,
-                        color: 'var(--color-text-primary)',
-                        boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                      }}>
-                        {msg.text}
-                      </div>
-                      {/* 来源标签 */}
-                      <span className="text-xs mt-1 px-1" style={{ color: 'var(--color-text-muted)', fontSize: '10px' }}>
-                        {msg.source === 'voice' ? '语音' : msg.source === 'tts' ? '小龙' : msg.source === 'alert' ? '系统' : '文字'}
-                      </span>
-                    </div>
+          {/* 消息列表 */}
+          <div className="flex-1 overflow-y-auto mb-4 space-y-3 pr-2" style={{ minHeight: 0 }}>
+            {messages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-slide-in`}>
+                <div className={`flex gap-2 max-w-[75%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                  <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center" style={{
+                    background: msg.role === 'user' ? 'rgba(0,212,255,0.15)' : 'rgba(244,114,182,0.15)',
+                  }}>
+                    {msg.role === 'user' ? <User size={16} style={{ color: '#00d4ff' }} /> : <Bot size={16} style={{ color: '#f472b6' }} />}
                   </div>
-                </div>
-              );
-            })}
-            {/* AI 加载中 */}
-            {aiLoading && (
-              <div className="flex gap-2.5 animate-fade-in">
-                <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center" style={{
-                  background: 'rgba(244,114,182,0.15)', border: '1px solid rgba(244,114,182,0.2)',
-                }}>
-                  <Bot size={17} style={{ color: '#f472b6' }} />
-                </div>
-                <div className="rounded-2xl rounded-tl-md px-4 py-3" style={{
-                  background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)',
-                }}>
-                  <div className="flex gap-1">
-                    <div className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#f472b6', animationDelay: '0ms' }} />
-                    <div className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#f472b6', animationDelay: '150ms' }} />
-                    <div className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#f472b6', animationDelay: '300ms' }} />
+                  <div>
+                    {msg.role === 'user' && (
+                      <div className="text-xs mb-1 text-right" style={{ color: 'var(--color-text-secondary)' }}>{username}</div>
+                    )}
+                    <div className={`rounded-2xl px-4 py-2.5 text-sm ${msg.role === 'user' ? 'rounded-tr-sm' : 'rounded-tl-sm'}`} style={{
+                      background: msg.role === 'user'
+                        ? 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,255,136,0.1))'
+                        : 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${msg.role === 'user' ? 'rgba(0,212,255,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                    }}>
+                      {msg.text}
+                    </div>
+                    <div className={`text-xs mt-1 ${msg.role === 'user' ? 'text-right' : ''}`} style={{ color: 'var(--color-text-secondary)' }}>
+                      {msg.time}
+                    </div>
                   </div>
                 </div>
               </div>
-            )}
+            ))}
             <div ref={chatEndRef} />
           </div>
 
-          {/* 回到底部按钮 */}
-          {showScrollBtn && (
-            <button
-              onClick={() => scrollToBottom(true)}
-              className="absolute rounded-full w-10 h-10 flex items-center justify-center transition-all animate-fade-in"
-              style={{
-                background: 'rgba(0,212,255,0.15)', border: '1px solid rgba(0,212,255,0.3)',
-                right: 'calc(33.33% + 30px)', bottom: '140px', zIndex: 10,
-              }}
-            >
-              <ChevronDown size={20} style={{ color: '#00d4ff' }} />
-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full text-[10px] flex items-center justify-center" style={{ background: '#00d4ff', color: '#0a0e1a' }}>
-                {messages.filter((_, i) => i > messages.length - 5).length}
-              </span>
-            </button>
-          )}
-
-          {/* 录音面板 */}
+          {/* 手动录音详细面板 */}
           {isRecording && (
-            <div className="mx-5 mb-3 p-3 rounded-xl animate-fade-in flex-shrink-0" style={{
+            <div className="mb-3 p-3 rounded-xl animate-fade-in" style={{
               background: 'rgba(255,71,87,0.06)', border: '1px solid rgba(255,71,87,0.2)',
             }}>
               <div className="flex items-center justify-between mb-2">
@@ -515,46 +402,46 @@ export default function VoiceAssistant() {
             </div>
           )}
 
-          {/* 输入栏 */}
-          <div className="px-5 py-3 border-t flex-shrink-0" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-            <div className="flex items-center gap-3">
-              <button onClick={isRecording ? stopRecording : startRecording}
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 flex-shrink-0 ${isRecording ? 'animate-pulse-glow' : ''}`}
+          {/* 输入区域 */}
+          <div className="flex items-center gap-3">
+            <button onClick={isRecording ? stopRecording : startRecording}
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 flex-shrink-0 ${isRecording ? 'animate-pulse-glow' : ''}`}
+              style={{
+                background: isRecording ? 'rgba(255,71,87,0.2)' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${isRecording ? '#ff4757' : 'var(--color-border-glow)'}`,
+              }}
+              title={isRecording ? '取消录音' : '开始录音'}>
+              {isRecording ? <MicOff size={18} style={{ color: '#ff4757' }} /> : <Mic size={18} style={{ color: 'var(--color-text-secondary)' }} />}
+            </button>
+            <div className="flex-1 relative">
+              <input type="text" value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                placeholder={isRecording ? '正在聆听...说话内容将自动显示' : '输入消息或点击麦克风说话...'}
+                className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition-all"
                 style={{
-                  background: isRecording ? 'rgba(255,71,87,0.2)' : 'rgba(255,255,255,0.05)',
-                  border: `1px solid ${isRecording ? '#ff4757' : 'var(--color-border-glow)'}`,
-                }}
-                title={isRecording ? '取消录音' : '开始录音'}>
-                {isRecording ? <MicOff size={18} style={{ color: '#ff4757' }} /> : <Mic size={18} style={{ color: 'var(--color-text-secondary)' }} />}
-              </button>
-              <div className="flex-1 relative">
-                <input type="text" value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder={isRecording ? '正在聆听...说话内容将自动显示' : '输入消息或点击麦克风说话...'}
-                  className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition-all"
-                  style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: `1px solid ${isRecording ? 'rgba(0,212,255,0.3)' : 'var(--color-border-glow)'}`,
-                    color: 'var(--color-text-primary)',
-                  }} />
-              </div>
-              <button onClick={handleSend} disabled={aiLoading}
-                className="w-10 h-10 rounded-full flex items-center justify-center transition-all"
-                style={{ background: aiLoading ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg, var(--color-primary), var(--color-accent))', boxShadow: aiLoading ? 'none' : '0 0 12px rgba(0,212,255,0.3)' }}>
-                {aiLoading ? <Loader2 size={16} className="animate-spin" color="#00d4ff" /> : <Send size={16} color="#0a0e1a" />}
-              </button>
+                  background: 'rgba(255,255,255,0.05)',
+                  border: `1px solid ${isRecording ? 'rgba(0,212,255,0.3)' : 'var(--color-border-glow)'}`,
+                  color: 'var(--color-text-primary)',
+                }} />
             </div>
-            {micError && <div className="mt-2 text-xs" style={{ color: '#ff4757' }}>{micError}</div>}
-            <div className="mt-2 flex flex-wrap gap-2">
-              {QUICK_COMMANDS.map(cmd => (
-                <button key={cmd} onClick={() => handleQuickCommand(cmd)}
-                  className="px-3 py-1.5 rounded-full text-xs transition-all hover:scale-105"
-                  style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)', color: 'var(--color-text-secondary)' }}>
-                  {cmd}
-                </button>
-              ))}
-            </div>
+            <button onClick={handleSend} disabled={aiLoading}
+              className="w-10 h-10 rounded-full flex items-center justify-center transition-all"
+              style={{ background: aiLoading ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg, var(--color-primary), var(--color-accent))', boxShadow: aiLoading ? 'none' : '0 0 12px rgba(0,212,255,0.3)' }}>
+              {aiLoading ? <Loader2 size={16} className="animate-spin" color="#00d4ff" /> : <Send size={16} color="#0a0e1a" />}
+            </button>
+          </div>
+          {micError && <div className="mt-2 text-xs" style={{ color: '#ff4757' }}>{micError}</div>}
+
+          {/* 快捷指令按钮 */}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {QUICK_COMMANDS.map(cmd => (
+              <button key={cmd} onClick={() => handleQuickCommand(cmd)}
+                className="px-3 py-1.5 rounded-full text-xs transition-all hover:scale-105"
+                style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)', color: 'var(--color-text-secondary)' }}>
+                {cmd}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -565,6 +452,7 @@ export default function VoiceAssistant() {
             <h3 className="text-sm font-semibold">语音设置</h3>
           </div>
 
+          {/* 唤醒词 */}
           <div className="mb-5 p-3 rounded-xl" style={{ background: 'rgba(0,212,255,0.06)', border: '1px solid rgba(0,212,255,0.15)' }}>
             <div className="flex items-center gap-2 mb-2">
               <Volume2 size={14} style={{ color: '#00d4ff' }} />
@@ -581,31 +469,13 @@ export default function VoiceAssistant() {
             </div>
           </div>
 
-          <div className="mb-5 p-3 rounded-xl" style={{
-            background: `${currentEmotionColor}0a`,
-            border: `1px solid ${currentEmotionColor}30`,
-          }}>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold" style={{ color: 'var(--color-text-main)' }}>情绪切音</span>
-              <span className="text-xs px-2 py-0.5 rounded-full" style={{
-                background: `${currentEmotionColor}20`, color: currentEmotionColor,
-              }}>{currentEmotionZh}</span>
-            </div>
-            <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              摄像头实时检测表情，自动调整音色参数
-            </div>
-          </div>
-
+          {/* 语音角色 */}
           <div className="mb-5">
             <label className="text-xs mb-2 block" style={{ color: 'var(--color-text-secondary)' }}>语音角色（切换后立即生效）</label>
             <select value={settings.selectedRole} onChange={(e) => setSettings({ ...settings, selectedRole: Number(e.target.value) })}
               className="w-full px-3 py-2 rounded-lg text-sm outline-none cursor-pointer"
               style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--color-border-glow)', color: 'var(--color-text-primary)' }}>
-              {settings.roles.map((r, i) => (
-                <option key={i} value={i} style={{ background: '#0a0e1a' }}>
-                  {r}{settings.roleCategories?.[i] ? ` (${settings.roleCategories[i]})` : ''}
-                </option>
-              ))}
+              {settings.roles.map((r, i) => <option key={i} value={i} style={{ background: '#0a0e1a' }}>{r}</option>)}
             </select>
             <div className="mt-2 text-xs px-2 py-1.5 rounded-lg" style={{ background: 'rgba(0,212,255,0.06)', color: 'var(--color-text-secondary)' }}>
               当前: <span style={{ color: '#00d4ff', fontWeight: 600 }}>{settings.roles[settings.selectedRole]}</span>
@@ -645,6 +515,7 @@ export default function VoiceAssistant() {
             </div>
           </div>
 
+          {/* 设备状态 */}
           <div className="mb-5 p-3 rounded-xl" style={{ background: 'rgba(0,212,255,0.04)', border: '1px solid rgba(0,212,255,0.1)' }}>
             <div className="flex items-center gap-2 mb-2">
               <Volume2 size={14} style={{ color: '#00d4ff' }} />

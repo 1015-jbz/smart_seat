@@ -45,25 +45,15 @@ export const cabinData = {
 
 export const voiceMessages = [
   { role: 'user', text: '导航到最近的加油站', time: '14:28' },
-  { role: 'assistant', text: '路线规划好了。前面2公里有个加油站，大概5分钟能到。', time: '14:28' },
+  { role: 'assistant', text: '好的，已为您规划路线。前方2.3公里处有中国石化加油站，预计行驶时间5分钟。', time: '14:28' },
   { role: 'user', text: '播放一些轻松的音乐', time: '14:30' },
-  { role: 'assistant', text: '给你放点轻音乐哈，这首是《River Flows in You》。', time: '14:30' },
+  { role: 'assistant', text: '正在为您播放轻音乐合集，当前曲目：《River Flows in You》', time: '14:30' },
   { role: 'user', text: '车内温度有点高', time: '14:32' },
-  { role: 'assistant', text: '空调调到22度了，风量中等。', time: '14:32' },
+  { role: 'assistant', text: '已为您将空调温度调低至22℃，风量调至中档。', time: '14:32' },
 ];
 
 export const voiceSettings = {
-  roles: [
-    '晓伊・活泼少女',
-    '小梦・可爱少女',
-    '晓晓・温柔姐姐',
-    '云希・阳光少年',
-    '云健・热血青年',
-    '云扬・专业播报',
-    '晓北・东北话',
-    '晓妮・陕西话',
-  ],
-  roleCategories: ['动漫风', '动漫风', '温柔日常', '温柔日常', '温柔日常', '专业播报', '方言趣味', '方言趣味'],
+  roles: ['晓伊・活泼少女', '云希・阳光少年', '晓涵・温柔姐姐', '云野・磁性男声'],
   selectedRole: 2,
   pitchOffset: 0,
   speedOffset: 0,
@@ -106,11 +96,46 @@ export const weatherData = {
 };
 
 export const modules = [
-  { id: 'dashboard', name: '系统总览', path: '/', icon: 'LayoutDashboard' },
-  { id: 'emotion', name: '表情识别', path: '/emotion', icon: 'Smile' },
-  { id: 'vehicle', name: '车辆仪表', path: '/vehicle', icon: 'Gauge' },
-  { id: 'cabin', name: '座舱控制', path: '/cabin', icon: 'Settings' },
-  { id: 'voice', name: '语音助手', path: '/voice', icon: 'MessageCircle' },
-  { id: 'safety', name: '安全监控', path: '/safety', icon: 'Shield' },
-  { id: 'weather', name: '天气信息', path: '/weather', icon: 'CloudSun' },
+  {
+    id: 'dashboard',
+    name: '系统总览',
+    path: '/',
+    icon: 'LayoutDashboard',
+  },
+  {
+    id: 'emotion',
+    name: '表情识别',
+    path: '/emotion',
+    icon: 'Smile',
+  },
+  {
+    id: 'vehicle',
+    name: '车辆仪表',
+    path: '/vehicle',
+    icon: 'Gauge',
+  },
+  {
+    id: 'cabin',
+    name: '座舱控制',
+    path: '/cabin',
+    icon: 'Settings',
+  },
+  {
+    id: 'voice',
+    name: '语音助手',
+    path: '/voice',
+    icon: 'MessageCircle',
+  },
+  {
+    id: 'safety',
+    name: '安全监控',
+    path: '/safety',
+    icon: 'Shield',
+  },
+  {
+    id: 'weather',
+    name: '天气信息',
+    path: '/weather',
+    icon: 'CloudSun',
+  },
 ];

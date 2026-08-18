@@ -1,0 +1,354 @@
+import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
+import { voiceMessages } from '../data/mockData';
+
+const VoiceContext = createContext();
+
+const nowHHMM = () => {
+  const now = new Date();
+  return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+};
+
+// ===== 音色档案：每个角色不同的 pitch / rate / voiceKeys =====
+const VOICE_PROFILES = [
+  // 0: 晓伊・活泼动漫少女 — 高音调、快语速
+  { pitch: 1.5, rate: 1.2, volume: 1.0, voiceKeys: ['女', '晓晓', '小希', '小雅', 'Tingting', 'Yaoyao', 'Female'] },
+  // 1: 小明・沉稳男声 — 低音调、稳语速
+  { pitch: 0.7, rate: 0.92, volume: 1.0, voiceKeys: ['男', 'Male', 'David', 'George', 'Yunyang'] },
+  // 2: 雪儿・温柔女声 — 中高音调、适中队率（默认）
+  { pitch: 1.2, rate: 1.0, volume: 1.0, voiceKeys: ['温柔', '女', '晓晓', '小希', '小雅', 'Tingting', 'Female'] },
+  // 3: 机器人・电子合成音 — 极低音调、平语速
+  { pitch: 0.4, rate: 0.85, volume: 1.0, voiceKeys: [] },
+];
+
+// 根据角色选择不同语音包
+const pickVoiceForRole = (voices, roleIndex) => {
+  if (!voices || voices.length === 0) return null;
+  const zhVoices = voices.filter(v => v.lang && v.lang.toLowerCase().includes('zh'));
+  if (zhVoices.length === 0) return null;
+
+  const profile = VOICE_PROFILES[roleIndex] || VOICE_PROFILES[2];
+
+  // 角色无特定语音偏好（机器人）→ 取第一个中文语音
+  if (profile.voiceKeys.length === 0) return zhVoices[0];
+
+  // 第一优先级：名字命中关键词
+  const hit = zhVoices.find(v => {
+    const n = (v.name || '').toLowerCase();
+    return profile.voiceKeys.some(k => n.includes(k.toLowerCase()));
+  });
+  if (hit) return hit;
+
+  // 男声角色：排除女声关键词的语音
+  if (roleIndex === 1) {
+    const maleVoices = zhVoices.filter(v => {
+      const n = (v.name || '').toLowerCase();
+      return !['女', 'female', '晓晓', '小希', '小雅', 'tingting', 'yaoyao'].some(k => n.includes(k));
+    });
+    if (maleVoices.length > 0) return maleVoices[0];
+  }
+
+  // 女声角色：排除男声
+  const noMale = zhVoices.filter(v => !(v.name || '').includes('男') && !(v.name || '').toLowerCase().includes('male'));
+  return noMale[0] || zhVoices[0];
+};
+
+// 根据角色 + 设置应用音色参数（更自然的随机化 + 情绪波动）
+const applyVoiceProfile = (utter, priority, settings, sentence) => {
+  const roleIndex = settings?.selectedRole ?? 2;
+  const profile = VOICE_PROFILES[roleIndex] || VOICE_PROFILES[2];
+
+  // 基础参数 + 用户偏移
+  utter.pitch = profile.pitch + (settings?.pitchOffset || 0) * 0.08;
+  utter.rate = profile.rate + (settings?.speedOffset || 0) * 0.08;
+  utter.volume = profile.volume;
+
+  // 问候语略快
+  if (priority === 'greeting') {
+    utter.rate = Math.min(1.6, utter.rate * 1.08);
+  }
+
+  // 根据句子内容调整语调（更像真人说话的抑扬顿挫）
+  if (sentence) {
+    const lastChar = sentence.slice(-1);
+    const hasQuestion = lastChar === '？' || lastChar === '?';
+    const hasExclaim = lastChar === '！' || lastChar === '!';
+
+    if (hasQuestion) {
+      // 问句：语调上扬
+      utter.pitch = Math.min(2, utter.pitch * 1.12);
+    } else if (hasExclaim) {
+      // 感叹句：语速略快，加重语气
+      utter.rate = Math.min(2, utter.rate * 1.08);
+      utter.pitch = Math.min(2, utter.pitch * 1.05);
+    }
+    // 长句稍慢，短句稍快（像说话节奏）
+    if (sentence.length > 20) {
+      utter.rate = Math.max(0.5, utter.rate * 0.95);
+    } else if (sentence.length < 8) {
+      utter.rate = Math.min(2, utter.rate * 1.05);
+    }
+  }
+
+  // 情绪随机化：偶尔"兴奋"或"平静"，模拟真人情绪波动
+  const moodRoll = Math.random();
+  if (moodRoll < 0.12) {
+    utter.pitch += 0.08;
+    utter.rate += 0.03;
+  } else if (moodRoll > 0.88) {
+    utter.pitch -= 0.05;
+    utter.rate -= 0.02;
+  }
+  // 基础随机波动
+  utter.pitch += (Math.random() - 0.5) * 0.08;
+  utter.rate += (Math.random() - 0.5) * 0.05;
+
+  // 钳制
+  utter.pitch = Math.max(0, Math.min(2, utter.pitch));
+  utter.rate = Math.max(0.5, Math.min(2, utter.rate));
+};
+
+// 按句末标点分句（保留逗号在内，避免句子太碎）
+const splitIntoSentences = (text) => {
+  return text
+    .split(/(?<=[。！？!?…])/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+};
+
+export function VoiceProvider({ children }) {
+  const [messages, setMessages] = useState(voiceMessages);
+  const [latestAlert, setLatestAlert] = useState(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voicePhase, setVoicePhase] = useState('idle');
+  const [audioLevel, setAudioLevel] = useState(0);
+
+  const voiceQueueRef = useRef([]);
+  const isSpeakingRef = useRef(false);
+  const lastSpokenRef = useRef({});
+  const lastLevelSpeechRef = useRef({});
+  const curPriorityRef = useRef(null);
+
+  // 当前语音设置（由 VoiceAssistant 页面同步过来）
+  const voiceSettingsRef = useRef({ selectedRole: 2, pitchOffset: 0, speedOffset: 0, selectedStyle: 0 });
+
+  const setVoiceSettings = useCallback((settings) => {
+    voiceSettingsRef.current = { ...settings };
+  }, []);
+
+  // 中文语音包检测
+  useEffect(() => {
+    const checkVoices = () => {
+      const voices = window.speechSynthesis?.getVoices() || [];
+      const hasZh = voices.some(v => v.lang.includes('zh'));
+      if (!hasZh) {
+        console.warn('[VoiceStore] 未检测到中文语音包，TTS 可能无声');
+      }
+    };
+    checkVoices();
+    window.speechSynthesis?.addEventListener?.('voiceschanged', checkVoices);
+    return () => window.speechSynthesis?.removeEventListener?.('voiceschanged', checkVoices);
+  }, []);
+
+  const pushMessage = useCallback((role, text, source = 'text') => {
+    const msg = { role, text, time: nowHHMM(), source };
+    setMessages(prev => [...prev, msg]);
+    return msg;
+  }, []);
+
+  const clearMessages = useCallback(() => {
+    setMessages([]);
+  }, []);
+
+  const pushAlert = useCallback((text, level = 'info') => {
+    const alert = { text, level, time: nowHHMM() };
+    setLatestAlert(alert);
+    setMessages(prev => [...prev, { role: 'system', text, time: alert.time, source: 'alert' }]);
+    return alert;
+  }, []);
+
+  const PRIORITY_RANK = { critical: 4, alert: 3, greeting: 2, normal: 1 };
+
+  // ===== Edge TTS（高质量神经网络语音，替代浏览器内置 TTS）=====
+  const TTS_SERVER = 'http://localhost:7862';
+  const currentAudioRef = useRef(null);
+
+  const speak = useCallback((text, priority = 'normal') => {
+    return new Promise((resolve) => {
+      const newRank = PRIORITY_RANK[priority] ?? 0;
+      const curRank = curPriorityRef.current ? (PRIORITY_RANK[curPriorityRef.current] ?? 0) : 0;
+
+      // 高优先级打断当前播放
+      if (newRank > curRank && currentAudioRef.current) {
+        try { currentAudioRef.current.pause(); } catch(e) {}
+        currentAudioRef.current = null;
+      }
+
+      const settings = voiceSettingsRef.current;
+      const sentences = splitIntoSentences(text);
+      if (sentences.length === 0) sentences.push(text);
+
+      if (newRank <= curRank && isSpeakingRef.current) {
+        setTimeout(() => {
+          playSentences(sentences, priority, settings, resolve);
+        }, 250);
+        return;
+      }
+
+      curPriorityRef.current = priority;
+      playSentences(sentences, priority, settings, resolve);
+    });
+  }, []);
+
+  // 逐句播放（Edge TTS + 自然停顿）
+  const playSentences = (sentences, priority, settings, resolve) => {
+    let idx = 0;
+    let done = false;
+    const totalTimeout = Math.max(10000, sentences.join('').length * 500);
+
+    const finish = () => {
+      if (!done) { done = true; curPriorityRef.current = null; currentAudioRef.current = null; resolve(); }
+    };
+
+    const timeoutId = setTimeout(finish, totalTimeout);
+
+    const playNext = () => {
+      if (idx >= sentences.length) {
+        clearTimeout(timeoutId);
+        finish();
+        return;
+      }
+      const sentence = sentences[idx];
+      const roleId = settings?.selectedRole ?? 2;
+      const url = `${TTS_SERVER}/api/tts?text=${encodeURIComponent(sentence)}&role=${roleId}`;
+
+      const audio = new Audio(url);
+      currentAudioRef.current = audio;
+
+      audio.onended = () => {
+        idx++;
+        const endChar = sentence.slice(-1);
+        let gap;
+        if (priority === 'alert') {
+          gap = 50;
+        } else if (endChar === '。' || endChar === '.' || endChar === '…') {
+          gap = 200 + Math.random() * 100;
+        } else if (endChar === '？' || endChar === '?' || endChar === '！' || endChar === '!') {
+          gap = 180 + Math.random() * 80;
+        } else {
+          gap = 120 + Math.random() * 60;
+        }
+        setTimeout(playNext, gap);
+      };
+      audio.onerror = () => {
+        idx++;
+        setTimeout(playNext, 200);
+      };
+      audio.play();
+    };
+
+    playNext();
+  };
+
+  const speakNext = useCallback(() => {
+    if (isSpeakingRef.current) return;
+    const queue = voiceQueueRef.current;
+    if (queue.length === 0) return;
+
+    const next = queue.shift();
+    isSpeakingRef.current = true;
+    setIsSpeaking(true);
+
+    speak(next.text, next.priority).then(() => {
+      isSpeakingRef.current = false;
+      setIsSpeaking(false);
+      next.resolve?.();
+      const gap = next.gap ?? (next.priority === 'alert' ? 0 : 200);
+      setTimeout(() => speakNext(), gap);
+    });
+  }, [speak]);
+
+  const enqueueSpeech = useCallback((text, priority = 'normal', opts = {}) => {
+    return new Promise((resolve) => {
+      const now = Date.now();
+
+      if (opts?.loop) {
+        if (voiceQueueRef.current.some(item => item.text === text)) {
+          resolve();
+          return;
+        }
+        const gap = opts.gap ?? 0;
+        voiceQueueRef.current.push({
+          id: now, text, priority: 'alert', ts: now, gap, resolve,
+        });
+        speakNext();
+        return;
+      }
+
+      const textKey = text.substring(0, 20);
+      if (lastSpokenRef.current[textKey] && now - lastSpokenRef.current[textKey] < 30000) {
+        resolve();
+        return;
+      }
+      if ((priority === 'alert' || priority === 'critical') &&
+          lastLevelSpeechRef.current[priority] &&
+          now - lastLevelSpeechRef.current[priority] < 30000) {
+        resolve();
+        return;
+      }
+      lastSpokenRef.current[textKey] = now;
+      if (priority === 'alert' || priority === 'critical') {
+        lastLevelSpeechRef.current[priority] = now;
+      }
+
+      if (priority === 'critical') {
+        voiceQueueRef.current = [{ id: now, text, priority, ts: now, gap: 0, resolve }];
+        isSpeakingRef.current = false;
+        setIsSpeaking(false);
+        curPriorityRef.current = null;
+        if (currentAudioRef.current) { try { currentAudioRef.current.pause(); } catch(e) {} currentAudioRef.current = null; }
+        setTimeout(() => speakNext(), 100);
+      } else {
+        const gap = opts.gap ?? (priority === 'alert' ? 0 : 200);
+        voiceQueueRef.current.push({ id: now, text, priority, ts: now, gap, resolve });
+        speakNext();
+      }
+    });
+  }, [speakNext]);
+
+  const cancelAllSpeech = useCallback(() => {
+    voiceQueueRef.current = [];
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+    curPriorityRef.current = null;
+    if (currentAudioRef.current) {
+      try { currentAudioRef.current.pause(); } catch(e) {}
+      currentAudioRef.current = null;
+    }
+  }, []);
+
+  return (
+    <VoiceContext.Provider value={{
+      messages,
+      pushMessage,
+      clearMessages,
+      latestAlert,
+      pushAlert,
+      enqueueSpeech,
+      cancelAllSpeech,
+      isSpeaking,
+      voicePhase,
+      setVoicePhase,
+      audioLevel,
+      setAudioLevel,
+      setVoiceSettings,
+    }}>
+      {children}
+    </VoiceContext.Provider>
+  );
+}
+
+export function useVoice() {
+  const ctx = useContext(VoiceContext);
+  if (!ctx) throw new Error('useVoice must be used within VoiceProvider');
+  return ctx;
+}

@@ -1,0 +1,83 @@
+"""
+Edge TTS 服务 — 高质量神经网络语音合成
+音色远超浏览器内置 Web Speech API
+
+端点:
+  GET /api/tts?text=xxx&role=0    生成 MP3 音频
+  GET /api/voices                  获取可用音色列表
+  GET /api/health                  健康检查
+"""
+import io
+import asyncio
+import logging
+from flask import Flask, Response, request, jsonify
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s | %(message)s')
+logger = logging.getLogger("tts_server")
+
+import edge_tts
+
+app = Flask(__name__)
+
+@app.after_request
+def _add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = '*'
+    return response
+
+VOICE_MAP = {
+    0: ("zh-CN-XiaoyiNeural",  "+8%"),
+    1: ("zh-CN-YunxiNeural",   "-3%"),
+    2: ("zh-CN-XiaohanNeural", "+0%"),
+    3: ("zh-CN-YunyeNeural",   "-5%"),
+}
+
+async def _generate_tts(text, voice, rate):
+    communicate = edge_tts.Communicate(text, voice, rate=rate)
+    audio_data = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data.write(chunk["data"])
+    return audio_data.getvalue()
+
+@app.route('/api/tts')
+def tts():
+    text = request.args.get('text', '')
+    role = int(request.args.get('role', '2'))
+    if not text:
+        return jsonify({'error': 'text is required'}), 400
+    voice, rate = VOICE_MAP.get(role, VOICE_MAP[2])
+    try:
+        audio_bytes = asyncio.run(_generate_tts(text, voice, rate))
+        if len(audio_bytes) == 0:
+            return jsonify({'error': 'empty audio'}), 500
+        return Response(audio_bytes, mimetype='audio/mpeg', headers={
+            'Cache-Control': 'no-cache',
+            'Content-Length': str(len(audio_bytes)),
+        })
+    except Exception as e:
+        logger.error(f"TTS failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/voices')
+def voices():
+    return jsonify({'voices': [
+        {'id': 0, 'name': '晓伊', 'gender': 'female', 'desc': '活泼少女'},
+        {'id': 1, 'name': '云希', 'gender': 'male', 'desc': '阳光少年'},
+        {'id': 2, 'name': '晓涵', 'gender': 'female', 'desc': '温柔姐姐'},
+        {'id': 3, 'name': '云野', 'gender': 'male', 'desc': '磁性男声'},
+    ]})
+
+@app.route('/api/health')
+def health():
+    return jsonify({'status': 'ok', 'engine': 'edge-tts'})
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, default=7862)
+    parser.add_argument('--host', default='0.0.0.0')
+    args = parser.parse_args()
+    logger.info(f"Edge TTS: http://{args.host}:{args.port}")
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)

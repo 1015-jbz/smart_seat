@@ -140,10 +140,11 @@ EMOTION_ZH = {
     "disgusted": "厌恶",
 }
 
-_latest_frame = None          # 最新表情模式帧 (JPEG bytes)
-_latest_frame_safety = None   # 最新安全模式帧 (JPEG bytes, 无表情标签)
+_latest_frame = None          # 最新帧 (JPEG bytes)
+_latest_frame_safety = None   # 安全模式帧 (复用 _latest_frame)
 _latest_emotion = "neutral"
 _latest_confidence = 0.0
+_latest_frame_id = 0           # 帧ID，video_feed 据此跳过重复帧
 _lock = threading.Lock()
 
 _cache_lock = threading.Lock()
@@ -610,31 +611,106 @@ def _detector_loop():
             logger.warning(f"识别线程异常: {e}")
 
 
+def _gen_placeholder_frame(msg="摄像头未连接"):
+    """生成占位帧，避免前端完全黑屏"""
+    global _latest_frame, _latest_frame_safety, _latest_frame_id
+    img = np.zeros((360, 480, 3), dtype=np.uint8)
+    # 深蓝背景
+    img[:] = (30, 30, 50)
+    cv2.putText(img, msg, (80, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 200), 2)
+    cv2.putText(img, "Camera Offline", (120, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (80, 80, 120), 1)
+    _, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    jpeg_bytes = jpeg.tobytes()
+    with _lock:
+        _latest_frame = jpeg_bytes
+        _latest_frame_safety = jpeg_bytes
+        _latest_frame_id += 1
+    logger.info(f"已生成占位帧: {msg}")
+
+
+def _open_camera():
+    """尝试打开摄像头，返回可用的 cap 对象"""
+    backends = [
+        ("MSMF", cv2.CAP_MSMF),
+        ("DirectShow", cv2.CAP_DSHOW),
+        ("默认", None),
+    ]
+    for backend_name, backend_flag in backends:
+        try:
+            if backend_flag is not None:
+                cap = cv2.VideoCapture(0, backend_flag)
+            else:
+                cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                time.sleep(0.5)  # 给摄像头更多预热时间
+                bright_ok = False
+                for i in range(10):
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None and test_frame.size > 0:
+                        mean_val = test_frame.mean()
+                        logger.info(f"  {backend_name} 帧{i+1}: 亮度={mean_val:.1f}")
+                        if mean_val > 15:
+                            bright_ok = True
+                            break
+                    time.sleep(0.1)
+                if bright_ok:
+                    logger.info(f"摄像头已连接 (后端: {backend_name})")
+                    return cap
+                else:
+                    logger.warning(f"{backend_name} 后端可打开但帧过暗，尝试下一个后端...")
+                    cap.release()
+            else:
+                logger.warning(f"{backend_name} 后端无法打开摄像头")
+        except Exception as e:
+            logger.warning(f"{backend_name} 后端异常: {e}")
+    return None
+
+
 def _capture_loop():
     """采集线程：持续捕获摄像头 → 画标注 → 出 JPEG"""
-    global _video_cap, _video_running, _latest_frame, _latest_emotion, _latest_confidence, _pending_frame
+    global _video_cap, _video_running, _latest_frame, _latest_emotion, _latest_confidence, _pending_frame, _latest_frame_id
 
     logger.info("正在连接摄像头...")
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        logger.warning("DirectShow 失败，尝试默认后端...")
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            logger.error("无法打开摄像头")
-            _video_running = False
-            return
-    time.sleep(0.5)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+    cap = _open_camera()
+
+    if cap is None or not cap.isOpened():
+        logger.error("所有后端均无法获取有效摄像头画面")
+        _video_running = False
+        _gen_placeholder_frame("摄像头未连接")
+        return
+
+    # 记住初始分辨率（亮度检查通过的分辨率）
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    logger.info(f"摄像头默认分辨率: {orig_w}x{orig_h}")
+
+    # 尝试降低分辨率以提升性能，但验证不会导致黑屏
+    target_w, target_h = 480, 360
+    if orig_w > target_w:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_h)
+        time.sleep(0.2)
+        # 验证：降低分辨率后帧是否仍然有效
+        ret, test = cap.read()
+        if not ret or test is None or test.mean() < 15:
+            logger.warning(f"降低分辨率到 {target_w}x{target_h} 后帧无效，恢复默认分辨率")
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, orig_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, orig_h)
+            time.sleep(0.2)
+        else:
+            logger.info(f"分辨率已调整为 {target_w}x{target_h}")
+
     cap.set(cv2.CAP_PROP_FPS, 20)
-    logger.info(f"摄像头已连接: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+    final_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    final_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    logger.info(f"摄像头最终分辨率: {final_w}x{final_h}")
 
     _video_cap = cap
     _video_running = True
 
     _frame_counter = 0
-    # NOTE: _cached_* 是模块级全局变量，由 _detector_loop 写入，
-    # 本函数只读取不赋值，避免创建同名局部变量覆盖全局。
+    _fail_count = 0       # 连续失败计数
+    _MAX_FAILS = 30       # 连续失败超过此值则重连
 
     # 启动识别线程
     _detector_thread = threading.Thread(target=_detector_loop, daemon=True)
@@ -643,10 +719,46 @@ def _capture_loop():
 
     while _video_running:
         ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.01)
+        if not ret or frame is None:
+            _fail_count += 1
+            if _fail_count >= _MAX_FAILS:
+                logger.warning(f"连续 {_fail_count} 帧读取失败，尝试重连摄像头...")
+                cap.release()
+                time.sleep(1)
+                cap = _open_camera()
+                if cap is None or not cap.isOpened():
+                    logger.error("重连失败，生成占位帧")
+                    _gen_placeholder_frame("摄像头重连失败")
+                    _video_running = False
+                    return
+                _video_cap = cap
+                _fail_count = 0
+                logger.info("摄像头重连成功")
+            else:
+                time.sleep(0.05)
             continue
 
+        # 检查帧是否全黑
+        if frame.mean() < 5:
+            _fail_count += 1
+            if _fail_count >= _MAX_FAILS:
+                logger.warning(f"连续 {_fail_count} 帧全黑，尝试重连摄像头...")
+                cap.release()
+                time.sleep(1)
+                cap = _open_camera()
+                if cap is None or not cap.isOpened():
+                    logger.error("重连失败，生成占位帧")
+                    _gen_placeholder_frame("摄像头画面全黑")
+                    _video_running = False
+                    return
+                _video_cap = cap
+                _fail_count = 0
+                logger.info("摄像头重连成功")
+            else:
+                time.sleep(0.05)
+            continue
+
+        _fail_count = 0
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
         _frame_counter += 1
@@ -665,9 +777,6 @@ def _capture_loop():
         # 读取安全监控数据
         with _safety_lock:
             safety = dict(_cached_safety)
-
-        # 基础帧（无标注，供安全模式使用）
-        base_frame = frame.copy()
 
         # --- 安全标注（两个模式都展示）---
         def _draw_safety_overlay(img):
@@ -703,8 +812,9 @@ def _capture_loop():
         _draw_safety_overlay(safety_frame)
 
         # 表情模式帧：人脸框 + 表情标签 + 安全标注
+        # 优化：复用 safety_frame 作为基础，避免额外复制
+        emotion_frame = safety_frame.copy()
         if box is not None:
-            emotion_frame = frame.copy()
             x, y, fw, fh = box
             color = EMOTION_COLORS.get(emo, (180, 180, 180))
             label = f"{EMOTION_ZH.get(emo, emo)} ({cnf:.0%})"
@@ -716,18 +826,19 @@ def _capture_loop():
             text_color = (0, 0, 0) if sum(color) > 400 else (255, 255, 255)
             cv2.putText(emotion_frame, label, (x+3, y-3), font, scale, text_color, thick)
         else:
-            emotion_frame = frame.copy()
             cv2.putText(emotion_frame, "Camera OK - 等待人脸",
                         (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         _draw_safety_overlay(emotion_frame)
 
-        _, jpeg_emotion = cv2.imencode('.jpg', emotion_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-        _, jpeg_safety = cv2.imencode('.jpg', safety_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        # 性能优化：只编码一次 JPEG（之前编码两次，浪费 5-10ms/帧）
+        _, jpeg = cv2.imencode('.jpg', emotion_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        jpeg_bytes = jpeg.tobytes()
         with _lock:
-            _latest_frame = jpeg_emotion.tobytes()
-            _latest_frame_safety = jpeg_safety.tobytes()
+            _latest_frame = jpeg_bytes
+            _latest_frame_safety = jpeg_bytes  # 复用同一帧
             _latest_emotion = _cached_emotion
             _latest_confidence = _cached_conf
+            _latest_frame_id += 1
 
     cap.release()
     logger.info("摄像头已释放")
@@ -769,17 +880,19 @@ def video_feed():
     mode = request.args.get('mode', 'emotion')
     start_camera()
     def generate():
-        frame_interval = 1.0 / 20
+        last_id = -1
         while True:
             with _lock:
+                fid = _latest_frame_id
                 frame = _latest_frame_safety if mode == 'safety' else _latest_frame
-                if frame is None:
-                    frame = _latest_frame  # 安全帧未就绪时回退到表情帧
             if frame is None:
-                time.sleep(0.05)
+                time.sleep(0.02)
                 continue
+            if fid == last_id:
+                time.sleep(0.01)  # 帧未更新，短等待后重试
+                continue
+            last_id = fid
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(frame_interval)
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 

@@ -285,7 +285,7 @@ export default function EmotionRecognition() {
               <>
                 <img
                   ref={imgRef}
-                  src={`${CAMERA_SERVER}/video_feed?t=${Date.now()}`}
+                  src={`${CAMERA_SERVER}/video_feed`}
                   alt="Camera Stream"
                   className="absolute inset-0 w-full h-full"
                   style={{ objectFit: 'cover' }}

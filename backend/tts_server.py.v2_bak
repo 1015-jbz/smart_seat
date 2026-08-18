@@ -1,0 +1,205 @@
+"""
+Windows 本地 TTS 服务 — 使用 WinRT SpeechSynthesizer
+离线可用，无需网络连接
+
+端点:
+  GET /api/tts?text=xxx&role=0    生成 WAV 音频
+  GET /api/voices                  获取可用音色列表
+  GET /api/health                  健康检查
+"""
+import asyncio
+import logging
+import threading
+import html
+from flask import Flask, Response, request, jsonify
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s | %(message)s')
+logger = logging.getLogger("tts_server")
+
+app = Flask(__name__)
+
+@app.after_request
+def _add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = '*'
+    return response
+
+# ===== WinRT TTS 初始化 =====
+_winrt_available = False
+_all_voices = []
+
+try:
+    from winsdk.windows.media.speechsynthesis import SpeechSynthesizer
+    from winsdk.windows.storage.streams import DataReader
+
+    _all_voices = list(SpeechSynthesizer.all_voices)
+    _winrt_available = True
+    logger.info(f"WinRT TTS 就绪，共 {len(_all_voices)} 个语音")
+    for v in _all_voices:
+        logger.info(f"  - {v.display_name} | {v.language} | gender={v.gender}")
+except Exception as e:
+    logger.warning(f"WinRT TTS 不可用: {e}")
+
+# ===== 音色映射 =====
+# 3 个中文语音：
+#   Huihui  (女) — 活泼
+#   Yaoyao  (女) — 温柔
+#   Kangkang(男) — 男声
+#
+# 4 个角色通过不同语音 + SSML prosody 参数区分
+VOICE_MAP = {
+    0: {"voice_idx": 0, "rate": "+20%", "pitch": "+12%"},   # 晓伊 - 活泼少女 (Huihui, 快+高)
+    1: {"voice_idx": 2, "rate": "+8%",  "pitch": "-5%"},    # 云希 - 阳光少年 (Kangkang, 略快)
+    2: {"voice_idx": 1, "rate": "-8%",  "pitch": "+3%"},    # 晓涵 - 温柔姐姐 (Yaoyao, 略慢)
+    3: {"voice_idx": 2, "rate": "-18%", "pitch": "-15%"},   # 云野 - 磁性男声 (Kangkang, 慢+低)
+}
+
+# 线程本地存储，每个线程一个 synthesizer 实例
+_tls = threading.local()
+
+def _get_synthesizer():
+    """获取当前线程的 SpeechSynthesizer 实例"""
+    if not hasattr(_tls, 'synth'):
+        _tls.synth = SpeechSynthesizer()
+    return _tls.synth
+
+
+async def _generate_tts_winrt(text, role):
+    """使用 WinRT SpeechSynthesizer 生成语音"""
+    profile = VOICE_MAP.get(role, VOICE_MAP[2])
+    voice_idx = profile["voice_idx"]
+
+    synth = _get_synthesizer()
+
+    # 设置语音
+    if voice_idx < len(_all_voices):
+        synth.voice = _all_voices[voice_idx]
+
+    # 使用 SSML 控制 prosody
+    safe_text = html.escape(text)
+    rate = profile["rate"]
+    pitch = profile["pitch"]
+
+    ssml = f'''<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN">
+  <prosody rate="{rate}" pitch="{pitch}">{safe_text}</prosody>
+</speak>'''
+
+    result = await synth.synthesize_ssml_to_stream_async(ssml)
+
+    # 读取音频数据
+    input_stream = result.get_input_stream_at(0)
+    reader = DataReader(input_stream)
+    await reader.load_async(10 * 1024 * 1024)  # 最多 10MB
+
+    byte_count = reader.unconsumed_buffer_length
+    if byte_count == 0:
+        return b""
+
+    buffer = reader.read_buffer(byte_count)
+    # 将 IBuffer 转为 bytes
+    data = bytes(buffer)
+    return data
+
+
+def _generate_tts_sync(text, role):
+    """同步包装：在新事件循环中运行异步 TTS"""
+    loop = asyncio.new_event_loop()
+    try:
+        data = loop.run_until_complete(_generate_tts_winrt(text, role))
+        return data
+    finally:
+        loop.close()
+
+
+# ===== pyttsx3 后备 =====
+_pyttsx3_engine = None
+_pyttsx3_lock = threading.Lock()
+
+def _generate_tts_pyttsx3(text, role):
+    """使用 pyttsx3 生成语音（后备方案）"""
+    global _pyttsx3_engine
+    with _pyttsx3_lock:
+        if _pyttsx3_engine is None:
+            import pyttsx3
+            _pyttsx3_engine = pyttsx3.init()
+
+        voices = _pyttsx3_engine.getProperty('voices')
+
+        # 角色映射
+        rate_adj = {
+            0: 50,   # 活泼少女 - 快
+            1: 20,   # 阳光少年 - 略快
+            2: -20,  # 温柔姐姐 - 略慢
+            3: -40,  # 磁性男声 - 慢
+        }
+        base_rate = _pyttsx3_engine.getProperty('rate')
+        _pyttsx3_engine.setProperty('rate', base_rate + rate_adj.get(role, 0))
+
+        # 设置语音（如果有多个）
+        if len(voices) > 0:
+            voice_map = {0: 0, 1: 0, 2: 0, 3: 0}
+            vidx = voice_map.get(role, 0)
+            if vidx < len(voices):
+                _pyttsx3_engine.setProperty('voice', voices[vidx].id)
+
+        import io as _io
+        wav_buf = _io.BytesIO()
+        _pyttsx3_engine.save_to_file(text, wav_buf)
+        _pyttsx3_engine.runAndWait()
+        return wav_buf.getvalue()
+
+
+@app.route('/api/tts')
+def tts():
+    text = request.args.get('text', '')
+    role = int(request.args.get('role', '2'))
+    if not text:
+        return jsonify({'error': 'text is required'}), 400
+
+    try:
+        if _winrt_available:
+            audio_bytes = _generate_tts_sync(text, role)
+        else:
+            audio_bytes = _generate_tts_pyttsx3(text, role)
+
+        if not audio_bytes or len(audio_bytes) == 0:
+            return jsonify({'error': 'empty audio'}), 500
+
+        return Response(audio_bytes, mimetype='audio/wav', headers={
+            'Cache-Control': 'no-cache',
+            'Content-Length': str(len(audio_bytes)),
+        })
+    except Exception as e:
+        logger.error(f"TTS failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/voices')
+def voices():
+    return jsonify({'voices': [
+        {'id': 0, 'name': '晓伊', 'gender': 'female', 'desc': '活泼少女'},
+        {'id': 1, 'name': '云希', 'gender': 'male', 'desc': '阳光少年'},
+        {'id': 2, 'name': '晓涵', 'gender': 'female', 'desc': '温柔姐姐'},
+        {'id': 3, 'name': '云野', 'gender': 'male', 'desc': '磁性男声'},
+    ]})
+
+
+@app.route('/api/health')
+def health():
+    engine = 'winrt' if _winrt_available else 'pyttsx3'
+    return jsonify({
+        'status': 'ok',
+        'engine': engine,
+        'voices_count': len(_all_voices) if _winrt_available else 0,
+    })
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, default=7862)
+    parser.add_argument('--host', default='0.0.0.0')
+    args = parser.parse_args()
+    logger.info(f"TTS Server (WinRT): http://{args.host}:{args.port}")
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
