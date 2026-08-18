@@ -23,10 +23,10 @@ export default function MiniChat() {
     setLoading(true);
     try {
       const res = await api.chat(userText, { city: location.city });
-      const reply = res?.reply || '抱歉，AI 服务暂时不可用。';
+      const reply = res?.reply || '诶，AI暂时用不了，等下再试试。';
       pushMessage('assistant', reply, 'tts');
     } catch {
-      pushMessage('assistant', '抱歉，AI 服务暂时不可用。', 'tts');
+      pushMessage('assistant', '诶，AI暂时用不了，等下再试试。', 'tts');
     } finally {
       setLoading(false);
     }

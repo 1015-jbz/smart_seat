@@ -13,30 +13,30 @@ const WAKE_WORD = '小龙';
 function localCommandMatch(text) {
   const lower = text.toLowerCase();
   if (lower.includes('开窗') || lower.includes('打开窗')) {
-    if (lower.includes('全部') || lower.includes('所有')) return '好的，已为您打开全部车窗。';
-    if (lower.includes('主驾') || lower.includes('驾驶')) return '好的，已为您打开驾驶员侧车窗。';
-    return '好的，已为您打开驾驶员侧车窗。';
+    if (lower.includes('全部') || lower.includes('所有')) return '好嘞，车窗全开啦。';
+    if (lower.includes('主驾') || lower.includes('驾驶')) return '嗯，主驾车窗打开了。';
+    return '嗯，主驾车窗打开了。';
   }
-  if (lower.includes('关窗') || lower.includes('关闭窗')) return '好的，已为您关闭全部车窗。';
+  if (lower.includes('关窗') || lower.includes('关闭窗')) return '车窗都关好了。';
   if (lower.includes('温度') || lower.includes('空调')) {
     const tempMatch = text.match(/(\d+)度/);
-    if (tempMatch) return `已将空调温度设置为${tempMatch[1]}度。`;
-    if (lower.includes('冷') || lower.includes('降温')) return '已调低空调温度，开启制冷模式。';
-    if (lower.includes('热') || lower.includes('升温')) return '已调高空调温度，开启制热模式。';
-    if (lower.includes('关闭') || lower.includes('关掉')) return '空调已关闭。';
-    return '已为您调整空调温度至22度。';
+    if (tempMatch) return `空调调到${tempMatch[1]}度了。`;
+    if (lower.includes('冷') || lower.includes('降温')) return '温度调低了，制冷开着呢。';
+    if (lower.includes('热') || lower.includes('升温')) return '温度调高了，暖和点了吧。';
+    if (lower.includes('关闭') || lower.includes('关掉')) return '空调关了。';
+    return '帮你调到22度了。';
   }
   if (lower.includes('风速') || lower.includes('风量')) {
-    if (lower.includes('大') || lower.includes('强')) return '风量已调至高档。';
-    if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
-    return '风量已调至中档。';
+    if (lower.includes('大') || lower.includes('强')) return '风量调大了。';
+    if (lower.includes('小') || lower.includes('弱')) return '风量调小了。';
+    return '风量调到中间了。';
   }
-  if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
-  if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首。';
-  if (lower.includes('音量') && lower.includes('大')) return '音量已调高。';
-  if (lower.includes('音量') && lower.includes('小')) return '音量已调低。';
-  if (lower.includes('接听')) return '已为您接通来电。';
-  if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
+  if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐暂停了。';
+  if (lower.includes('下一首') || lower.includes('切歌')) return '切到下一首了。';
+  if (lower.includes('音量') && lower.includes('大')) return '音量大点了。';
+  if (lower.includes('音量') && lower.includes('小')) return '音量小点了。';
+  if (lower.includes('接听')) return '电话接通了。';
+  if (lower.includes('挂断') || lower.includes('拒接')) return '电话挂了。';
   return null;
 }
 
@@ -45,6 +45,7 @@ export default function RightPanel() {
   const {
     pushAlert, enqueueSpeech, pushMessage,
     voicePhase, setVoicePhase, audioLevel, setAudioLevel,
+    isSpeaking,
   } = useVoice();
 
   // ===== 全局唤醒 & 录音 refs =====
@@ -188,8 +189,8 @@ export default function RightPanel() {
   // ===== 唤醒成功回调：TTS 播完再开麦 =====
   const triggerWake = useCallback(async () => {
     setVoicePhase('tts');
-    pushMessage('assistant', '我在，请说您的需求。', 'tts');
-    await enqueueSpeech('我在，请说您的需求。', 'greeting');
+    pushMessage('assistant', '在呢，说吧。', 'tts');
+    await enqueueSpeech('在呢，说吧。', 'greeting');
     setVoicePhase('listening');
     startRecording();
   }, [pushMessage, enqueueSpeech, setVoicePhase, startRecording]);
@@ -243,6 +244,28 @@ export default function RightPanel() {
     return () => clearTimeout(t);
   }, [startWakeListen]);
 
+  // ===== TTS 播放时暂停唤醒监听，避免扬声器音频回馈麦克风 =====
+  useEffect(() => {
+    if (isSpeaking) {
+      // TTS 开始播放：暂停唤醒监听
+      if (wakeRecRef.current) {
+        try { wakeRecRef.current.abort(); } catch(e) {}
+        wakeRecRef.current = null;
+        setWakeListening(false);
+      }
+    } else {
+      // TTS 播放结束：恢复唤醒监听（延迟 300ms 避免音频尾音）
+      if (!isRecordingRef.current && !wakeRecRef.current && voicePhase === 'idle') {
+        const t = setTimeout(() => {
+          if (!isRecordingRef.current && !wakeRecRef.current) {
+            startWakeListen();
+          }
+        }, 300);
+        return () => clearTimeout(t);
+      }
+    }
+  }, [isSpeaking, voicePhase, startWakeListen]);
+
   // ===== 疲劳告警回调（保留原逻辑）=====
   useEffect(() => {
     setVoiceAlertCallback((text, level, opts = {}) => {
@@ -263,7 +286,7 @@ export default function RightPanel() {
       const city = location?.city || '';
       const weatherDesc = weather?.description ? `，${weather.description}` : '';
       const tempDesc = weather?.temperature != null ? `，${Math.round(weather.temperature)}度` : '';
-      const greeting = `${timeGreet}！今天是${dateStr}${city ? '，' + city : ''}${weatherDesc}${tempDesc}。智能座舱为您服务，祝您一路平安。`;
+      const greeting = `${timeGreet}！今天是${dateStr}${city ? '，' + city : ''}${weatherDesc}${tempDesc}。我在这儿呢，路上注意安全哈。`;
       enqueueSpeech(greeting, 'greeting');
     });
   }, [setGreetingCallback, enqueueSpeech, location.city, weather.description, weather.temperature]);

@@ -9,10 +9,18 @@ export default function CameraFeed() {
   const [online, setOnline] = useState(true);
 
   useEffect(() => {
-    const img = new Image();
-    img.onload = () => setOnline(true);
-    img.onerror = () => setOnline(false);
-    img.src = CAMERA_FEED_URL;
+    // 用 fetch /api/health 检查，避免创建多余的 MJPEG 连接
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('http://localhost:7861/api/health', { signal: AbortSignal.timeout(3000) });
+        setOnline(res.ok);
+      } catch {
+        setOnline(false);
+      }
+    };
+    checkHealth();
+    const timer = setInterval(checkHealth, 10000);
+    return () => clearInterval(timer);
   }, []);
 
   const isFatigueAlert = safety.alertLevel !== 'normal';

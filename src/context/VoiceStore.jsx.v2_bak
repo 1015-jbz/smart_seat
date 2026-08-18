@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useRef } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { voiceMessages } from '../data/mockData';
 
 const VoiceContext = createContext();
@@ -8,6 +8,7 @@ const nowHHMM = () => {
   return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 };
 
+// 按句末标点分句（保留逗号在内，避免句子太碎）
 const splitIntoSentences = (text) => {
   return text
     .split(/(?<=[。！？!?…])/)
@@ -28,15 +29,11 @@ export function VoiceProvider({ children }) {
   const lastLevelSpeechRef = useRef({});
   const curPriorityRef = useRef(null);
 
+  // 当前语音设置（由 VoiceAssistant 页面同步过来）
   const voiceSettingsRef = useRef({ selectedRole: 2, pitchOffset: 0, speedOffset: 0, selectedStyle: 0 });
-  const emotionRef = useRef('neutral');
 
   const setVoiceSettings = useCallback((settings) => {
     voiceSettingsRef.current = { ...settings };
-  }, []);
-
-  const setEmotion = useCallback((emotion) => {
-    emotionRef.current = emotion || 'neutral';
   }, []);
 
   const pushMessage = useCallback((role, text, source = 'text') => {
@@ -58,149 +55,108 @@ export function VoiceProvider({ children }) {
 
   const PRIORITY_RANK = { critical: 4, alert: 3, greeting: 2, normal: 1 };
 
+  // ===== WinRT TTS 服务（本地离线语音合成）=====
   const TTS_SERVER = 'http://localhost:7862';
   const currentAudioRef = useRef(null);
-  const playSentencesRef = useRef(null);
 
-  const buildTtsUrl = (sentence, roleId, emotion) => {
-    return `${TTS_SERVER}/api/tts?text=${encodeURIComponent(sentence)}&role=${roleId}&emotion=${emotion}`;
-  };
+  // 逐句播放（WinRT TTS + 自然停顿）
+  const playSentencesRef = useRef(null);
 
   const speak = useCallback((text, priority = 'normal') => {
     return new Promise((resolve) => {
       const newRank = PRIORITY_RANK[priority] ?? 0;
       const curRank = curPriorityRef.current ? (PRIORITY_RANK[curPriorityRef.current] ?? 0) : 0;
 
+      // 高优先级打断当前播放
       if (newRank > curRank && currentAudioRef.current) {
         try { currentAudioRef.current.pause(); } catch(e) {}
         currentAudioRef.current = null;
       }
 
+      const settings = voiceSettingsRef.current;
       const sentences = splitIntoSentences(text);
       if (sentences.length === 0) sentences.push(text);
 
       if (newRank <= curRank && isSpeakingRef.current) {
-        let retries = 0;
-        const maxRetries = 20;
-        const tryStart = () => {
-          if (!isSpeakingRef.current || retries >= maxRetries) {
-            curPriorityRef.current = priority;
-            playSentencesRef.current?.(sentences, priority, resolve);
-          } else {
-            retries++;
-            setTimeout(tryStart, 300);
-          }
-        };
-        setTimeout(tryStart, 300);
+        setTimeout(() => {
+          playSentencesRef.current?.(sentences, priority, settings, resolve);
+        }, 250);
         return;
       }
 
       curPriorityRef.current = priority;
-      playSentencesRef.current?.(sentences, priority, resolve);
+      playSentencesRef.current?.(sentences, priority, settings, resolve);
     });
   }, []);
 
-  const prefetchAudio = (url) => {
-    const audio = new Audio();
-    audio.preload = 'auto';
-    audio.src = url;
-  };
-
-  playSentencesRef.current = (sentences, priority, resolve) => {
+  // 使用 useRef 存储 playSentences 函数，避免闭包陷阱
+  playSentencesRef.current = (sentences, priority, settings, resolve) => {
     let idx = 0;
     let done = false;
-    let activeTimers = [];
-
-    const clearTimers = () => {
-      activeTimers.forEach(t => clearTimeout(t));
-      activeTimers = [];
-    };
+    const totalTimeout = Math.max(15000, sentences.join('').length * 600);
 
     const finish = () => {
       if (!done) {
         done = true;
-        clearTimers();
         curPriorityRef.current = null;
         currentAudioRef.current = null;
         resolve();
       }
     };
 
-    const totalTimeout = Math.max(20000, sentences.join('').length * 800);
-    activeTimers.push(setTimeout(finish, totalTimeout));
-
-    const getCurrentRole = () => voiceSettingsRef.current?.selectedRole ?? 2;
-    const getCurrentEmotion = () => emotionRef.current || 'neutral';
-
-    let initRole = getCurrentRole();
-    let initEmotion = getCurrentEmotion();
-    sentences.forEach(s => {
-      prefetchAudio(buildTtsUrl(s, initRole, initEmotion));
-    });
+    const timeoutId = setTimeout(finish, totalTimeout);
 
     const playNext = () => {
-      if (done) return;
       if (idx >= sentences.length) {
+        clearTimeout(timeoutId);
         finish();
         return;
       }
-
-      const curRole = getCurrentRole();
-      const curEmotion = getCurrentEmotion();
       const sentence = sentences[idx];
-      const url = buildTtsUrl(sentence, curRole, curEmotion);
-
-      if (curRole !== initRole) {
-        console.log(`[VoiceStore] 角色切换: ${initRole} → ${curRole}`);
-        initRole = curRole;
-        for (let i = idx + 1; i < sentences.length; i++) {
-          prefetchAudio(buildTtsUrl(sentences[i], curRole, curEmotion));
-        }
-      }
+      const roleId = settings?.selectedRole ?? 2;
+      const url = `${TTS_SERVER}/api/tts?text=${encodeURIComponent(sentence)}&role=${roleId}`;
 
       const audio = new Audio();
       audio.preload = 'auto';
       audio.src = url;
       currentAudioRef.current = audio;
 
-      let advanced = false;
-      const advance = () => {
-        if (advanced || done) return;
-        advanced = true;
-        clearTimers();
-        try { audio.pause(); } catch(e) {}
+      audio.onended = () => {
         idx++;
-        const gap = priority === 'alert' ? 50 : (80 + Math.random() * 50);
-        activeTimers.push(setTimeout(playNext, gap));
+        const endChar = sentence.slice(-1);
+        let gap;
+        if (priority === 'alert') {
+          gap = 50;
+        } else if (endChar === '。' || endChar === '.' || endChar === '…') {
+          gap = 200 + Math.random() * 100;
+        } else if (endChar === '？' || endChar === '?' || endChar === '！' || endChar === '!') {
+          gap = 180 + Math.random() * 80;
+        } else {
+          gap = 120 + Math.random() * 60;
+        }
+        setTimeout(playNext, gap);
       };
 
-      audio.onended = () => advance();
-      audio.onerror = () => advance();
+      audio.onerror = (e) => {
+        console.warn('[VoiceStore] Audio error, skipping:', sentence.substring(0, 20), e);
+        idx++;
+        setTimeout(playNext, 200);
+      };
 
-      activeTimers.push(setTimeout(() => {
-        if (!advanced && !done) advance();
-      }, 8000));
-
+      // 正确处理 play() 返回的 Promise
       audio.play().then(() => {
-        if (audio.duration && isFinite(audio.duration) && audio.duration > 0) {
-          const dt = (audio.duration * 1000) + 2000;
-          activeTimers.push(setTimeout(() => {
-            if (!advanced && !done) advance();
-          }, dt));
-        }
-      }).catch(() => {
-        setTimeout(() => {
-          if (done || advanced) return;
-          const r = new Audio();
-          r.src = url;
-          r.onended = () => advance();
-          r.onerror = () => advance();
-          currentAudioRef.current = r;
-          activeTimers.push(setTimeout(() => {
-            if (!advanced && !done) advance();
-          }, 5000));
-          r.play().catch(() => advance());
-        }, 200);
+        // 播放成功
+      }).catch((err) => {
+        console.warn('[VoiceStore] Play() rejected:', err.message, '- text:', sentence.substring(0, 30));
+        // 可能是浏览器自动播放策略阻止，尝试重新加载后播放
+        audio.load();
+        audio.play().then(() => {
+          // 重试成功
+        }).catch((err2) => {
+          console.warn('[VoiceStore] Retry failed, skipping:', err2.message);
+          idx++;
+          setTimeout(playNext, 200);
+        });
       });
     };
 
@@ -216,21 +172,7 @@ export function VoiceProvider({ children }) {
     isSpeakingRef.current = true;
     setIsSpeaking(true);
 
-    const watchdog = setTimeout(() => {
-      if (isSpeakingRef.current) {
-        console.warn('[VoiceStore] Watchdog: force reset after 30s');
-        isSpeakingRef.current = false;
-        setIsSpeaking(false);
-        curPriorityRef.current = null;
-        if (currentAudioRef.current) {
-          try { currentAudioRef.current.pause(); } catch(e) {}
-          currentAudioRef.current = null;
-        }
-      }
-    }, 30000);
-
     speak(next.text, next.priority).then(() => {
-      clearTimeout(watchdog);
       isSpeakingRef.current = false;
       setIsSpeaking(false);
       next.resolve?.();
@@ -249,7 +191,9 @@ export function VoiceProvider({ children }) {
           return;
         }
         const gap = opts.gap ?? 0;
-        voiceQueueRef.current.push({ id: now, text, priority: 'alert', ts: now, gap, resolve });
+        voiceQueueRef.current.push({
+          id: now, text, priority: 'alert', ts: now, gap, resolve,
+        });
         speakNext();
         return;
       }
@@ -298,9 +242,19 @@ export function VoiceProvider({ children }) {
 
   return (
     <VoiceContext.Provider value={{
-      messages, pushMessage, clearMessages, latestAlert, pushAlert,
-      enqueueSpeech, cancelAllSpeech, isSpeaking, voicePhase, setVoicePhase,
-      audioLevel, setAudioLevel, setVoiceSettings, setEmotion,
+      messages,
+      pushMessage,
+      clearMessages,
+      latestAlert,
+      pushAlert,
+      enqueueSpeech,
+      cancelAllSpeech,
+      isSpeaking,
+      voicePhase,
+      setVoicePhase,
+      audioLevel,
+      setAudioLevel,
+      setVoiceSettings,
     }}>
       {children}
     </VoiceContext.Provider>
