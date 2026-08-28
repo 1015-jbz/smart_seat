@@ -1,11 +1,11 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, Smile, Gauge, Settings, MessageCircle, Shield, CloudSun,
+  LayoutDashboard, Smile, Gauge, Settings, MessageCircle, Shield, CloudSun, Music,
 } from 'lucide-react';
 import { modules } from '../data/mockData';
 
 const iconMap = {
-  LayoutDashboard, Smile, Gauge, Settings, MessageCircle, Shield, CloudSun,
+  LayoutDashboard, Smile, Gauge, Settings, MessageCircle, Shield, CloudSun, Music,
 };
 
 export default function Sidebar() {

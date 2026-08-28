@@ -63,3 +63,8 @@ PORT = int(os.getenv("PORT", "8000"))
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
+
+# Jamendo 在线曲库（全球数十万首 CC 授权免费曲目）
+# 免费注册获取 client_id：https://devportal.jamendo.com
+JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
+JAMENDO_API_URL = "https://api.jamendo.com/v3.0"

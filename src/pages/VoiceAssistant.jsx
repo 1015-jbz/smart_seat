@@ -4,6 +4,7 @@ import { MessageCircle, Send, Mic, MicOff, Trash2, Settings2, User, Bot, Volume2
 import { voiceSettings } from '../data/mockData';
 import { useVehicle } from '../context/VehicleStore';
 import { useVoice } from '../context/VoiceStore';
+import { useMusicVoiceCommand } from '../context/MusicStore';
 import { api } from '../services/api';
 
 const nowHHMM = () => {
@@ -11,7 +12,7 @@ const nowHHMM = () => {
   return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 };
 
-const QUICK_COMMANDS = ['小龙', '导航到北京站', '播放流行音乐', '温度调到24度', '打开全部车窗', '明天天气', '打电话给张三'];
+const QUICK_COMMANDS = ['小龙', '导航到北京站', '播放流行音乐', '来一首轻音乐', '温度调到24度', '打开全部车窗', '明天天气'];
 
 function AudioVisualizer({ analyser, isActive }) {
   const canvasRef = useRef(null);
@@ -57,6 +58,7 @@ export default function VoiceAssistant() {
     messages, pushMessage, clearMessages, enqueueSpeech,
     voicePhase, setVoicePhase, audioLevel, setAudioLevel,
   } = useVoice();
+  const handleMusicCommand = useMusicVoiceCommand();
 
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -118,16 +120,16 @@ export default function VoiceAssistant() {
       if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
       return '风量已调至中档。';
     }
-    if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
-    if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首。';
-    if (lower.includes('音量') && lower.includes('大')) return '音量已调高。';
-    if (lower.includes('音量') && lower.includes('小')) return '音量已调低。';
+    // 音乐控制（播放/暂停/切歌/音量）由 useMusicVoiceCommand 真实控制播放器，不在此处理
     if (lower.includes('接听')) return '已为您接通来电。';
     if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
     return null;
   }, []);
 
   const generateReply = useCallback(async (text) => {
+    // 优先处理音乐指令（点歌/暂停/切歌/音量），真实控制播放器；本地未命中自动搜在线曲库
+    const musicRes = await handleMusicCommand(text);
+    if (musicRes) return { reply: musicRes.reply, source: 'local' };
     const local = localCommand(text);
     if (local) return { reply: local, source: 'local' };
     setAiLoading(true);
@@ -138,7 +140,7 @@ export default function VoiceAssistant() {
     } catch (_) {}
     finally { setAiLoading(false); }
     return { reply: '抱歉，AI 服务暂时不可用，请稍后再试。', source: 'fallback' };
-  }, [location.city, localCommand]);
+  }, [location.city, localCommand, handleMusicCommand]);
 
   const addAssistantReply = useCallback(async (userText) => {
     const { reply } = await generateReply(userText);

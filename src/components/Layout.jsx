@@ -9,6 +9,7 @@ import { modules } from '../data/mockData';
 import { useTheme } from '../context/ThemeContext';
 import Sidebar from './Sidebar';
 import RightPanel from './RightPanel';
+import MiniPlayer from './MiniPlayer';
 
 export default function Layout() {
   const location = useLocation();
@@ -155,6 +156,9 @@ export default function Layout() {
         </main>
         <RightPanel />
       </div>
+
+      {/* 全局音乐迷你播放条（有播放内容时显示，切页面不中断） */}
+      <MiniPlayer />
 
       {/* 用户名编辑弹窗 */}
       {showEditName && (

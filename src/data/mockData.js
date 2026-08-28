@@ -127,6 +127,12 @@ export const modules = [
     icon: 'MessageCircle',
   },
   {
+    id: 'music',
+    name: '音乐娱乐',
+    path: '/music',
+    icon: 'Music',
+  },
+  {
     id: 'safety',
     name: '安全监控',
     path: '/safety',

@@ -283,6 +283,45 @@ export const api = {
     if (!res || res.error) return null;
     return res;
   },
+
+  /**
+   * 完整曲库 GET /music/library
+   * 返回 { total, tracks, local_dir } 或 null
+   * tracks: [{ id, title, artist, album, genre, source, url }]
+   */
+  musicLibrary: async () => {
+    const data = await apiFetch('/music/library', { timeout: 8000 });
+    if (!data || data.error) return null;
+    return data;
+  },
+
+  /** 按关键词搜索曲库 GET /music/search?q= */
+  musicSearch: async (q) => {
+    const data = await apiFetch(`/music/search?q=${encodeURIComponent(q)}`, { timeout: 8000 });
+    if (!data || data.error) return null;
+    return data;
+  },
+
+  /** 刷新本地曲库（重新扫描音乐目录） POST /music/refresh */
+  musicRefresh: async () => {
+    const data = await apiFetch('/music/refresh', { method: 'POST', timeout: 8000 });
+    if (!data || data.error) return null;
+    return data;
+  },
+
+  /** 在线曲库搜索（Jamendo） GET /music/online/search?q= ，失败/未配置返回 { error } 或 null */
+  musicOnlineSearch: async (q) => {
+    const data = await apiFetch(`/music/online/search?q=${encodeURIComponent(q)}`, { timeout: 15000 });
+    if (!data) return null;
+    return data; // 可能带 error 字段（如未配置 client_id），由调用方处理
+  },
+
+  /** 在线曲库热门榜（可按风格） GET /music/online/hot?tag= */
+  musicOnlineHot: async (tag = '') => {
+    const data = await apiFetch(`/music/online/hot?tag=${encodeURIComponent(tag)}`, { timeout: 15000 });
+    if (!data) return null;
+    return data;
+  },
 };
 
 // ============ WebSocket 客户端工厂 ============

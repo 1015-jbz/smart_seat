@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useVehicle } from '../context/VehicleStore';
 import { useVoice } from '../context/VoiceStore';
+import { useMusicVoiceCommand } from '../context/MusicStore';
 import { api } from '../services/api';
 import CameraFeed from './CameraFeed';
 import NotifyPanel from './NotifyPanel';
@@ -31,10 +32,7 @@ function localCommandMatch(text) {
     if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
     return '风量已调至中档。';
   }
-  if (lower.includes('暂停') || lower.includes('停止播放')) return '音乐已暂停。';
-  if (lower.includes('下一首') || lower.includes('切歌')) return '已切换到下一首。';
-  if (lower.includes('音量') && lower.includes('大')) return '音量已调高。';
-  if (lower.includes('音量') && lower.includes('小')) return '音量已调低。';
+  // 音乐控制（暂停/切歌/音量/点歌）由 useMusicVoiceCommand 真实控制播放器，不在此处理
   if (lower.includes('接听')) return '已为您接通来电。';
   if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
   return null;
@@ -46,6 +44,7 @@ export default function RightPanel() {
     pushAlert, enqueueSpeech, pushMessage,
     voicePhase, setVoicePhase, audioLevel, setAudioLevel,
   } = useVoice();
+  const handleMusicCommand = useMusicVoiceCommand();
 
   // ===== 全局唤醒 & 录音 refs =====
   const streamRef = useRef(null);
@@ -70,8 +69,11 @@ export default function RightPanel() {
     };
   }, []);
 
-  // ===== 生成回复（本地命令 → API → fallback）=====
+  // ===== 生成回复（音乐指令 → 本地命令 → API → fallback）=====
   const generateReply = useCallback(async (text) => {
+    // 优先处理音乐指令（点歌/暂停/切歌/音量），真实控制播放器；本地未命中自动搜在线曲库
+    const musicRes = await handleMusicCommand(text);
+    if (musicRes) return { reply: musicRes.reply, source: 'local' };
     const local = localCommandMatch(text);
     if (local) return { reply: local, source: 'local' };
     try {
@@ -80,7 +82,7 @@ export default function RightPanel() {
       if (res && res.reply) return { reply: res.reply, source: res.source };
     } catch (_) {}
     return { reply: '抱歉，AI 服务暂时不可用，请稍后再试。', source: 'fallback' };
-  }, [location.city]);
+  }, [location.city, handleMusicCommand]);
 
   // ===== 停止麦克风硬件 =====
   const stopMicHardware = useCallback(() => {

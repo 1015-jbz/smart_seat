@@ -7,7 +7,38 @@ echo   智能座舱 - 挑战杯项目 一键环境安装
 echo ========================================
 echo.
 
-:: 检查 Python
+:: 智能查找 Python（兼容未加入 PATH 的情况）
+python --version >nul 2>&1
+if %errorlevel% equ 0 goto :python_ok
+
+:: 尝试常见安装路径，找到后加入当前会话 PATH
+if exist "C:\tools\python\python.exe" (
+    set "PATH=C:\tools\python;C:\tools\python\Scripts;%PATH%"
+    goto :python_check
+)
+if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" (
+    set "PATH=%LOCALAPPDATA%\Programs\Python\Python313;%LOCALAPPDATA%\Programs\Python\Python313\Scripts;%PATH%"
+    goto :python_check
+)
+if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
+    set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
+    goto :python_check
+)
+if exist "C:\Python313\python.exe" (
+    set "PATH=C:\Python313;C:\Python313\Scripts;%PATH%"
+    goto :python_check
+)
+if exist "C:\Python312\python.exe" (
+    set "PATH=C:\Python312;C:\Python312\Scripts;%PATH%"
+    goto :python_check
+)
+
+echo [错误] 未找到 Python，请先安装 Python 3.10+
+echo 下载: https://www.python.org/downloads/
+pause
+exit /b 1
+
+:python_check
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [错误] 未找到 Python，请先安装 Python 3.10+
@@ -15,6 +46,8 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+
+:python_ok
 echo [√] Python 已安装
 
 :: 检查 Node.js

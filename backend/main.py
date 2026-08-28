@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from config import CORS_ORIGINS, CORS_ORIGIN_REGEX, API_V1_PREFIX
 from database import init_db
-from routers import vehicle, safety, weather, location, emotion, driving, chat
+from routers import vehicle, safety, weather, location, emotion, driving, chat, music
 
 logger = logging.getLogger("smart_cabin")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -75,6 +75,7 @@ app.include_router(location.router, prefix=API_V1_PREFIX)
 app.include_router(emotion.router, prefix=API_V1_PREFIX)
 app.include_router(driving.router, prefix=API_V1_PREFIX)
 app.include_router(chat.router, prefix=API_V1_PREFIX)
+app.include_router(music.router, prefix=API_V1_PREFIX)
 
 # 注意：WebSocket 路由已在 vehicle.router 中定义，前缀 /vehicle
 # 挂载到 /api/v1 后实际路径为 /api/v1/vehicle/ws/vehicle。
