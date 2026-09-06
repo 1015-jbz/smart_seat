@@ -1,8 +1,12 @@
-"""DeepSeek 对话代理 — 智能座舱语音助手的 AI 大脑"""
+"""AI 对话代理 — 智能座舱语音助手的 AI 大脑（OpenAI 兼容接口）
+
+支持任意 OpenAI 兼容提供商：DeepSeek / 阿里云百炼 / 本地 Ollama 等，
+通过 .env 中的 LLM_API_KEY / LLM_CHAT_URL / LLM_MODEL 切换。
+"""
 
 from typing import Optional
 import httpx
-from config import DEEPSEEK_API_KEY, DEEPSEEK_CHAT_URL, DEEPSEEK_MODEL, API_TIMEOUT
+from config import LLM_API_KEY, LLM_CHAT_URL, LLM_MODEL, API_TIMEOUT
 
 SYSTEM_PROMPT = """你是"小龙"，一个智能座舱语音助手。你在汽车中控系统中为驾驶员服务。
 
@@ -22,8 +26,8 @@ SYSTEM_PROMPT = """你是"小龙"，一个智能座舱语音助手。你在汽�
 
 
 async def chat(user_message: str, context: Optional[dict] = None) -> Optional[str]:
-    """调用 DeepSeek，失败返回 None"""
-    if not DEEPSEEK_API_KEY:
+    """调用 LLM（OpenAI 兼容），失败返回 None"""
+    if not LLM_API_KEY:
         return None
 
     context_hint = ""
@@ -49,9 +53,9 @@ async def chat(user_message: str, context: Optional[dict] = None) -> Optional[st
     try:
         async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             resp = await client.post(
-                DEEPSEEK_CHAT_URL,
-                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
-                json={"model": DEEPSEEK_MODEL, "messages": messages, "temperature": 0.85, "max_tokens": 500},
+                LLM_CHAT_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+                json={"model": LLM_MODEL, "messages": messages, "temperature": 0.85, "max_tokens": 500},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -62,5 +66,5 @@ async def chat(user_message: str, context: Optional[dict] = None) -> Optional[st
                 return content.strip()
         return None
     except Exception as e:
-        print(f"[chat_agent] DeepSeek 调用失败: {e}")
+        print(f"[chat_agent] LLM 调用失败: {e}")
         return None

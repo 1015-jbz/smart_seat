@@ -3,7 +3,7 @@
  * 仅在有曲目加载后显示。
  */
 import { useNavigate } from 'react-router-dom';
-import { Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle, Music2 } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle, Music2, Volume2, VolumeX } from 'lucide-react';
 import { useMusic, coverOf, formatTime } from '../context/MusicStore';
 
 const MODE_META = {
@@ -15,7 +15,8 @@ const MODE_META = {
 export default function MiniPlayer() {
   const {
     currentSong, isPlaying, currentTime, duration,
-    togglePlay, next, prev, seek, mode, cycleMode,
+    togglePlay, next, prev, seek, mode, cycleMode, buffering, playerError,
+    volume, changeVolume,
   } = useMusic();
   const navigate = useNavigate();
 
@@ -93,15 +94,33 @@ export default function MiniPlayer() {
           </span>
         </div>
 
+        {/* 音量控制 */}
+        <div className="hidden md:flex items-center gap-1.5 flex-shrink-0" style={{ width: 130 }}>
+          <button onClick={() => changeVolume(volume > 0 ? 0 : 0.7)}
+            title={volume > 0 ? '静音' : '取消静音'}
+            className="flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>
+            {volume > 0 ? <Volume2 size={16} /> : <VolumeX size={16} />}
+          </button>
+          <input type="range" min={0} max={1} step={0.01} value={volume}
+            onChange={(e) => changeVolume(Number(e.target.value))}
+            className="w-full" style={{ accentColor: 'var(--color-primary)' }}
+            aria-label="音量" title={`音量 ${Math.round(volume * 100)}%`} />
+        </div>
+
         {/* 状态标签 */}
         <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full flex-shrink-0"
           style={{ background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)' }}>
           <span className={`status-dot ${isPlaying ? 'online' : 'offline'}`} />
           <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            {isPlaying ? '播放中' : '已暂停'}
+            {buffering ? '缓冲中…' : isPlaying ? '播放中' : '已暂停'}
           </span>
         </div>
       </div>
+
+      {/* 播放错误提示（音源失败/被浏览器拦截时可见） */}
+      {playerError && (
+        <div className="text-xs mt-1" style={{ color: '#f87171' }}>{playerError}</div>
+      )}
 
       {/* 底部细进度线 */}
       <div className="mt-1.5 h-0.5 rounded-full overflow-hidden" style={{ background: 'rgba(120,120,120,0.15)' }}>

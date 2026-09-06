@@ -106,8 +106,16 @@ def scan_local_tracks(base_url: str) -> list[dict]:
 
 
 def get_library(base_url: str) -> list[dict]:
-    """返回完整曲库：内置演示曲目 + 本地音乐（本地排前面）。"""
-    return scan_local_tracks(base_url) + build_demo_tracks()
+    """返回完整曲库：本地音乐 + 内置演示曲目。
+
+    本地已合成演示曲目（generate_demo_tracks.py）时，不再叠加加载缓慢的
+    在线 SoundHelix 演示，避免国内网络下长时间缓冲“没声音”。
+    """
+    local = scan_local_tracks(base_url)
+    has_local_demo = any(t["title"].startswith("演示音轨") for t in local)
+    if has_local_demo:
+        return local
+    return local + build_demo_tracks()
 
 
 def resolve_local_file(track_id: str) -> Path | None:

@@ -65,10 +65,15 @@ export function MusicProvider({ children }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolumeState] = useState(() => {
-    const v = Number(localStorage.getItem('musicVolume'));
-    return isFinite(v) && v >= 0 && v <= 1 ? v : 0.7;
+    // 注意：localStorage 无值时 getItem 返回 null，Number(null)===0，
+    // 若不过滤会导致首次使用音量为 0（静音）；仅正数才视为有效保存值。
+    const raw = localStorage.getItem('musicVolume');
+    const v = raw === null ? NaN : Number(raw);
+    return isFinite(v) && v > 0 && v <= 1 ? v : 0.7;
   });
   const [mode, setModeState] = useState('sequence');
+  const [buffering, setBuffering] = useState(false);   // 音源加载中（海外源/大文件时可见）
+  const [playerError, setPlayerError] = useState('');   // 用户可见的播放错误提示
 
   // ===== 懒创建全局 Audio 元素（只创建一次，切页面不销毁）=====
   const ensureAudio = useCallback(() => {
@@ -81,9 +86,16 @@ export function MusicProvider({ children }) {
     audio.addEventListener('play', () => setIsPlaying(true));
     audio.addEventListener('pause', () => setIsPlaying(false));
     audio.addEventListener('ended', () => endedHandlerRef.current?.());
+    // 缓冲状态：等待数据时提示“缓冲中”，可播放后消除（避免误以为“没声音”）
+    audio.addEventListener('waiting', () => setBuffering(true));
+    audio.addEventListener('stalled', () => setBuffering(true));
+    audio.addEventListener('playing', () => setBuffering(false));
+    audio.addEventListener('canplay', () => setBuffering(false));
     audio.addEventListener('error', () => {
       console.warn('[MusicStore] 音频加载失败:', audio.src);
       setIsPlaying(false);
+      setBuffering(false);
+      setPlayerError('音频加载失败：音源无法访问，请换一首试试（本地曲目不受网络影响）');
     });
     audioRef.current = audio;
     return audio;
@@ -127,13 +139,25 @@ export function MusicProvider({ children }) {
     queueRef.current = idx >= 0 ? list : [song];
     indexRef.current = idx >= 0 ? idx : 0;
     const audio = ensureAudio();
+    setPlayerError('');
+    setBuffering(true);
     audio.src = song.url;
     audio.currentTime = 0;
+    audio.volume = volume;
     setCurrentSong(song);
     setCurrentTime(0);
     setDuration(0);
-    audio.play().catch(err => console.warn('[MusicStore] 播放失败:', err?.message || err));
-  }, [library, ensureAudio]);
+    audio.play().catch(err => {
+      // AbortError：上一次 play() 被新切歌打断，属正常竞态，静默忽略（新歌会自己负责播放）
+      if (err?.name === 'AbortError') return;
+      setIsPlaying(false);
+      if (err?.name === 'NotAllowedError') {
+        setPlayerError('浏览器拦截了自动播放，请手动点一下播放按钮');
+      } else {
+        setPlayerError('播放失败：' + (err?.message || '未知错误'));
+      }
+    });
+  }, [library, ensureAudio, volume]);
 
   const togglePlay = useCallback(() => {
     if (!currentSong) {
@@ -162,11 +186,19 @@ export function MusicProvider({ children }) {
   const next = useCallback((auto = false) => {
     const list = queueRef.current;
     if (list.length === 0) return;
-    if (auto && modeRef.current === 'single') {
-      const audio = ensureAudio();
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-      return;
+    if (auto) {
+      const audio = audioRef.current;
+      // 防护：媒体时长异常（0/Infinity）说明音源加载有问题，停止自动切歌避免死循环
+      if (audio && (!isFinite(audio.duration) || audio.duration <= 0)) {
+        setPlayerError('音源加载异常（无法解析时长），已停止自动播放');
+        return;
+      }
+      if (modeRef.current === 'single') {
+        const a = ensureAudio();
+        a.currentTime = 0;
+        a.play().catch(() => {});
+        return;
+      }
     }
     let idx;
     if (modeRef.current === 'shuffle' && list.length > 1) {
@@ -222,7 +254,7 @@ export function MusicProvider({ children }) {
       library, libraryLoading, localDir,
       loadLibrary, refreshLibrary, searchSongs,
       currentSong, isPlaying, currentTime, duration,
-      volume, mode,
+      volume, mode, buffering, playerError,
       playSong, togglePlay, pause, resume, next, prev, seek, changeVolume, cycleMode,
     }}>
       {children}

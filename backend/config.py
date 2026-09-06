@@ -59,7 +59,16 @@ API_V1_PREFIX = "/api/v1"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 
-# DeepSeek AI 对话 API
+# AI 对话服务（OpenAI 兼容接口，可自由切换提供商）
+# 支持：DeepSeek / 阿里云百炼（通义千问）/ 本地 Ollama 等
+# 在 .env 中配置 LLM_API_KEY / LLM_CHAT_URL / LLM_MODEL；
+# 未配置时自动回退使用旧的 DEEPSEEK_* 变量，保证兼容。
+LLM_API_KEY = os.getenv("LLM_API_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")
+LLM_CHAT_URL = os.getenv("LLM_CHAT_URL", "") or os.getenv(
+    "DEEPSEEK_CHAT_URL", "https://api.deepseek.com/v1/chat/completions")
+LLM_MODEL = os.getenv("LLM_MODEL", "") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+# DeepSeek（默认提供商，保留旧变量名供 .env 兼容）
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
