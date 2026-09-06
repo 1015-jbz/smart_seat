@@ -44,10 +44,16 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 # IP 定位接口
+# 高德地图 IP 定位（国内最准，精确到区县，免费 30万次/日，需申请 key）
 AMAP_IP_URL = "https://restapi.amap.com/v3/ip"
-AMAP_KEY = os.getenv("AMAP_KEY", "8daa61d5b1071072de54569a88268aad")
+AMAP_KEY = os.getenv("AMAP_KEY", "")
+# 高德逆地理编码（经纬度 → 中文地址，免费 30万次/日）
+AMAP_REGEO_URL = "https://restapi.amap.com/v3/geocode/regeo"
+# 高德地理编码（城市名 → 经纬度，免费 30万次/日）
+AMAP_GEO_URL = "https://restapi.amap.com/v3/geocode/geo"
+# 备用：太平洋电脑网 IP 定位（免费、无需 key、市级精度）
 PCONLINE_IP_URL = "https://whois.pconline.com.cn/ipJson.jsp?json=true"
-IPINFO_URL = "https://ipinfo.io/json"
+# 已废弃：ipinfo.io 国内严重不准，不再使用
 
 # WebSocket 推送间隔（秒）
 WS_PUSH_INTERVAL = 1.0

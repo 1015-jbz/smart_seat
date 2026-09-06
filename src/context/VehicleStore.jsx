@@ -83,39 +83,7 @@ function fetchWithTimeout(url, ms = 5000) {
 // 国内 Chrome 的 getCurrentPosition 底层调 Google 服务基本不可用，IP 定位是更可靠的实时方案。
 // 返回 { city, latitude, longitude } 或 null。
 async function locateByIP() {
-  // 方案1: 高德 IP 定位（国内最准，rectangle取中点即为坐标）
-  try {
-    const res = await fetchWithTimeout(
-      `https://restapi.amap.com/v3/ip?key=8daa61d5b1071072de54569a88268aad`,
-      5000
-    );
-    if (res.ok) {
-      const data = await res.json();
-      if (data.status === '1' && (data.city || data.province)) {
-        const cityRaw = (data.city || data.province || '').replace(/市$/, '');
-        const found = CITY_COORDS.find(c => cityRaw.includes(c.name) || c.name.includes(cityRaw));
-        let lat = found ? found.lat : null;
-        let lon = found ? found.lon : null;
-        // rectangle: "SW经,SW纬;NE经,NE纬" → 取中点
-        if (!lat && data.rectangle) {
-          const parts = data.rectangle.split(';');
-          if (parts.length === 2) {
-            const sw = parts[0].split(',').map(Number);
-            const ne = parts[1].split(',').map(Number);
-            lon = (sw[0] + ne[0]) / 2;
-            lat = (sw[1] + ne[1]) / 2;
-          }
-        }
-        return {
-          city: found ? found.name : cityRaw,
-          latitude: lat,
-          longitude: lon,
-        };
-      }
-    }
-  } catch (e) { /* 静默，试下一个 */ }
-
-  // 方案2: 太平洋电脑网（GBK 编码）
+  // 方案1: 太平洋电脑网（国内稳定、免费、无需 key，返回中文城市名；GBK 编码需解码）
   try {
     const res = await fetchWithTimeout('https://whois.pconline.com.cn/ipJson.jsp?json=true', 5000);
     const buf = await res.arrayBuffer();
@@ -124,6 +92,7 @@ async function locateByIP() {
     if (match) {
       const data = JSON.parse(match[0]);
       if (data.city) {
+        // 模糊匹配城市库（pconline 返回"南京市"，库里有"南京"）
         const found = CITY_COORDS.find(c => data.city.includes(c.name) || c.name.includes(data.city));
         return {
           city: found ? found.name : data.city.replace(/市$/, ''),
@@ -134,7 +103,7 @@ async function locateByIP() {
     }
   } catch (e) { /* 静默，试下一个 */ }
 
-  // 方案3: ipinfo.io
+  // 方案2: ipinfo.io（海外，返回经纬度，Cloudflare CDN 国内可访问）
   try {
     const res = await fetchWithTimeout('https://ipinfo.io/json', 5000);
     if (res.ok) {
@@ -196,11 +165,13 @@ export function VehicleProvider({ children }) {
   const smoothedFatigueRef = useRef(5);      // EWMA 平滑后的疲劳分
   const sustainTimerRef = useRef({ warning: 0, high: 0, critical: 0 });  // 持续时长累积器
   const lastHystTargetRef = useRef('normal');  // 上次滞回判定结果
-  const SUSTAIN_REQUIRED = { warning: 2.4, high: 1.8, critical: 0.6 };    // 比后端略长（前端 1.2s 间隔）
-  // 统一滞回阈值表（与后端 _HYSTERESIS 完全一致，防临界抖动带宽拉满）
+  // 摄像头数据防抖：后端 alert_level 升级时需连续确认，避免瞬时波动触发误报
+  const camLevelConfirmRef = useRef(null);    // { level, count }
+  const SUSTAIN_REQUIRED = { warning: 4.0, high: 3.0, critical: 1.5 };    // 与后端一致
+  // 统一滞回阈值表（与后端 _HYSTERESIS 完全一致）
   const HYSTERESIS = {
-    up:   { warning: 30, high: 55, critical: 80 },
-    down: { normal: 8,  warning: 35, high: 55 },
+    up:   { warning: 40, high: 60, critical: 80 },
+    down: { normal: 15,  warning: 40, high: 50 },
   };
   // 根据分数判定目标等级（滞回判定，不含 sustain gate）
   const determineLevel = (score, currentLevel = 'normal') => {
@@ -221,82 +192,113 @@ export function VehicleProvider({ children }) {
 
   // 车辆当前位置（全局共享，天气与导航共用）
   // source: 'gps' | 'ip' | 'manual' — 区分定位来源，UI 可展示精度差异
-  const [location, setLocation] = useState({
-    city: '北京', latitude: null, longitude: null,
-    located: false, loading: false, error: null, denied: false,
-    source: null, manual: false,
+  const [location, setLocation] = useState(() => {
+    // 启动时从 localStorage 恢复上次定位结果，避免每次刷新都重新定位
+    try {
+      const saved = localStorage.getItem('smart_cabin_location');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { ...parsed, loading: false, error: null };
+      }
+    } catch (_) {}
+    return {
+      city: '北京', district: null, province: null, address: null,
+      latitude: null, longitude: null,
+      located: false, loading: false, error: null, denied: false,
+      source: null, manual: false,
+    };
   });
 
+  // 定位结果持久化到 localStorage
+  const saveLocation = useCallback((loc) => {
+    try {
+      // 只存关键字段，过滤掉 loading/error 等临时状态
+      const toSave = {
+        city: loc.city, district: loc.district || null, province: loc.province || null,
+        address: loc.address || null,
+        latitude: loc.latitude, longitude: loc.longitude,
+        located: loc.located, source: loc.source, manual: loc.manual || false,
+      };
+      localStorage.setItem('smart_cabin_location', JSON.stringify(toSave));
+    } catch (_) {}
+  }, []);
+
   // 获取车辆当前位置：
-  //   1. 浏览器原生 GPS（精度最高，~10米级）
-  //   2. GPS 失败/超时/被拒 → 后端代理 IP 定位（pconline / ipinfo，城市级精度）
-  //   3. 后端也失败 → 前端直连 IP 定位（备选方案）
+  //   1. 浏览器原生 GPS + 高德逆地理 → 街道级（最准，需授权）
+  //   2. GPS 失败/被拒 → 后端 IP 定位（高德IP区县精度 → pconline市级兜底）
+  //   3. 后端也失败 → 前端直连 IP 定位
   //   4. 全部失败 → 提示手动选择
   const refreshLocation = useCallback(() => {
     setLocation(prev => ({ ...prev, loading: true, error: null, denied: false, manual: false }));
 
-    // 优先浏览器 GPS（高精度）
+    // 只用浏览器 GPS 定位（精确到街道级），不走 IP 定位兜底
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
+        async (position) => {
           const { latitude, longitude } = position.coords;
-          const city = findNearestCity(latitude, longitude);
-          setLocation({ city, latitude, longitude, located: true, loading: false, error: null, denied: false, source: 'gps', manual: false });
+          // GPS 拿到坐标后，调用后端逆地理编码拿中文地址
+          let regeoResult = null;
+          try {
+            regeoResult = await api.regeo(latitude, longitude);
+          } catch (_) { /* 逆地理失败，用近似匹配 */ }
+
+          if (regeoResult && regeoResult.city) {
+            const loc = {
+              city: regeoResult.city,
+              district: regeoResult.district || null,
+              province: regeoResult.province || null,
+              address: regeoResult.address || null,
+              latitude, longitude,
+              located: true, loading: false, error: null, denied: false,
+              source: 'gps', manual: false,
+            };
+            setLocation(loc);
+            saveLocation(loc);
+          } else {
+            // 逆地理失败 → 本地城市库近似匹配
+            const city = findNearestCity(latitude, longitude);
+            const loc = {
+              city, district: null, province: null, address: null,
+              latitude, longitude,
+              located: true, loading: false, error: null, denied: false,
+              source: 'gps', manual: false,
+            };
+            setLocation(loc);
+            saveLocation(loc);
+          }
         },
         (gpsError) => {
-          // GPS 失败 → 降级到后端 IP 定位
+          // GPS 失败/被拒 → 提示用户手动选择城市，不走 IP 定位
           console.warn('[location] GPS 定位失败:', gpsError?.message || gpsError);
-          fallbackToIP(gpsError);
+          let msg = 'GPS 定位失败，请手动选择城市';
+          if (gpsError?.code === 1) msg = '定位权限被拒绝，请在浏览器设置中允许位置访问';
+          else if (gpsError?.code === 2) msg = 'GPS 信号不可用，请检查设备定位服务';
+          else if (gpsError?.code === 3) msg = 'GPS 定位超时，请重试或手动选择城市';
+          setLocation(prev => ({ ...prev, loading: false, located: false, error: msg, denied: gpsError?.code === 1 }));
         },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     } else {
-      fallbackToIP(null);
+      // 浏览器不支持 GPS
+      setLocation(prev => ({ ...prev, loading: false, located: false, error: '浏览器不支持 GPS 定位，请手动选择城市', denied: false }));
     }
+  }, [saveLocation]);
 
-    async function fallbackToIP(gpsError) {
-      // 方案 A: 后端 IP 定位代理（增加超时到 10s）
-      try {
-        const data = await api.location();
-        if (data && data.city && data.latitude != null && data.longitude != null) {
-          setLocation({
-            city: data.city,
-            latitude: data.latitude,
-            longitude: data.longitude,
-            located: true, loading: false, error: null, denied: false,
-            source: 'ip', manual: false,
-          });
-          return;
-        }
-      } catch (_) { /* 后端不可用，继续 */ }
-
-      // 方案 B: 前端直连 IP 定位
-      const ipResult = await locateByIP();
-      if (ipResult) {
-        setLocation({ ...ipResult, located: true, loading: false, error: null, denied: false, source: 'ip', manual: false });
-      } else {
-        let msg = '定位失败，请手动选择城市';
-        if (gpsError?.code === 1) msg = '定位权限被拒绝，请手动选择城市';
-        setLocation(prev => ({ ...prev, loading: false, located: false, error: msg, denied: gpsError?.code === 1 }));
-      }
-    }
-  }, []);
-
-  // 应用启动时：先恢复上次手动选的城市 → 没有才走 IP 定位
+  // 应用启动时：有上次记忆的位置就直接用，没有才尝试 GPS
   useEffect(() => {
-    if (!restoreSavedCity()) {
+    if (!location.located) {
       refreshLocation();
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshLocation]);
 
   // 手动选择城市：定位失败或用户想切换城市时的可靠兜底，不依赖浏览器权限
-  // localStorage 持久化，刷新/重启后自动恢复
   const setCity = useCallback((cityName) => {
     const found = CITY_COORDS.find(c => c.name === cityName);
     if (found) {
-      try { localStorage.setItem('smart_seat_city', cityName); } catch (_) {}
-      setLocation({
+      const loc = {
         city: found.name,
+        district: null, province: null, address: null,
         latitude: found.lat,
         longitude: found.lon,
         located: true,
@@ -305,30 +307,31 @@ export function VehicleProvider({ children }) {
         denied: false,
         source: 'manual',
         manual: true,
-      });
+      };
+      setLocation(loc);
+      saveLocation(loc);
     }
-  }, []);
+  }, [saveLocation]);
 
-  // localStorage 记住的城市优先恢复，避免每次都要重新定位
-  const restoreSavedCity = useCallback(() => {
-    try {
-      const saved = localStorage.getItem('smart_seat_city');
-      if (saved) {
-        const found = CITY_COORDS.find(c => c.name === saved);
-        if (found) {
-          setLocation({
-            city: found.name,
-            latitude: found.lat,
-            longitude: found.lon,
-            located: true, loading: false, error: null, denied: false,
-            source: 'manual', manual: true,
-          });
-          return true;
-        }
-      }
-    } catch (_) {}
-    return false;
-  }, []);
+  // 通过搜索结果设置城市（支持任意城市/区县，不限于 CITY_COORDS）
+  const setCityBySearch = useCallback((result) => {
+    const loc = {
+      city: result.city,
+      district: result.district || null,
+      province: result.province || null,
+      address: result.address || null,
+      latitude: result.latitude,
+      longitude: result.longitude,
+      located: true,
+      loading: false,
+      error: null,
+      denied: false,
+      source: 'manual',
+      manual: true,
+    };
+    setLocation(loc);
+    saveLocation(loc);
+  }, [saveLocation]);
 
   // 页面后台时暂停所有定时器，避免不可见标签页持续触发 setState 与 CPU 占用
   useEffect(() => {
@@ -596,76 +599,42 @@ export function VehicleProvider({ children }) {
       let rawScore, alertLevel;
 
       if (camFresh) {
-        // --- 摄像头实时数据（后端已做 EWMA + Sustain Gate）---
+        // --- 摄像头实时数据（后端事件驱动告警）---
+        // 后端已有完整的去抖动和冷却机制，前端直接使用 alert_level
         rawScore = cam.fatigue_score;
-        alertLevel = cam.alert_level;
+        alertLevel = cam.alert_level || 'normal';
+        camLevelConfirmRef.current = null;
       } else {
-        // --- 摄像头不可用：前端模拟 ---
-        // v2 面部疲劳：区分"非驾驶视线"和"非前方但正常"
+        // --- 摄像头不可用：前端模拟（简化版，直接根据驾驶时长映射等级）---
         const isFatigueGaze = !['前方', '仪表盘', '左后视镜', '右后视镜'].includes(gazeDirection);
         const facialFatigue = Math.round(
-          eyeClosureRatio * 100 * 0.45 +      // 闭眼权重提升
-          yawnFreq * 8 * 0.35 +               // 哈欠权重提升
-          (isFatigueGaze ? 12 : 0) * 0.2       // 只对真正的疲劳视线计分
+          eyeClosureRatio * 100 * 0.45 +
+          yawnFreq * 8 * 0.35 +
+          (isFatigueGaze ? 12 : 0) * 0.2
         );
         rawScore = timeBasedFatigue * 0.6 + facialFatigue * 0.4;
-
-        // v2 前端 EWMA 平滑（模仿摄像头行为）
-        const alpha = rawScore > smoothedFatigueRef.current ? 0.35 : 0.15;
-        smoothedFatigueRef.current = alpha * rawScore + (1 - alpha) * smoothedFatigueRef.current;
-
-        // v2 前端 Sustain Gate + 统一滞回阈值表
-        const LEVELS = ['normal', 'warning', 'high', 'critical'];
-        const target = determineLevel(smoothedFatigueRef.current, prevAlertLevelRef.current);
-        if (target !== prevAlertLevelRef.current) {
-          if (LEVELS.indexOf(target) > LEVELS.indexOf(prevAlertLevelRef.current)) {
-            // 升级方向：连续判定同 target → 累积；target 变化 → 初始化新计时器
-            if (target === lastHystTargetRef.current) {
-              sustainTimerRef.current[target] = (sustainTimerRef.current[target] || 0) + 1.2;
-            } else {
-              if (lastHystTargetRef.current !== 'normal') sustainTimerRef.current[lastHystTargetRef.current] = 0;
-              sustainTimerRef.current[target] = 1.2;
-            }
-            lastHystTargetRef.current = target;
-            if (sustainTimerRef.current[target] >= SUSTAIN_REQUIRED[target]) {
-              alertLevel = target;
-              sustainTimerRef.current = { warning: 0, high: 0, critical: 0 };
-            } else {
-              alertLevel = prevAlertLevelRef.current;  // 继续等
-            }
-          } else {
-            // 降级：立刻生效
-            alertLevel = target;
-            sustainTimerRef.current = { warning: 0, high: 0, critical: 0 };
-            lastHystTargetRef.current = target;
-          }
-        } else {
-          // 同等级：如果上次判定要升级但现在回落 → 清零那次的计时器
-          if (lastHystTargetRef.current !== prevAlertLevelRef.current &&
-              LEVELS.indexOf(lastHystTargetRef.current) > LEVELS.indexOf(prevAlertLevelRef.current)) {
-            sustainTimerRef.current[lastHystTargetRef.current] = 0;
-          }
-          lastHystTargetRef.current = prevAlertLevelRef.current;
-          alertLevel = prevAlertLevelRef.current;
-        }
+        // 简单阈值映射：无 EWMA/滞回，直接根据分数判定
+        if (rawScore >= 60) alertLevel = 'high';
+        else if (rawScore >= 35) alertLevel = 'warning';
+        else alertLevel = 'normal';
       }
-      const fatigueScore = Math.round(camFresh ? rawScore : smoothedFatigueRef.current);
+      const fatigueScore = Math.round(rawScore);
 
       // ===== 4. 告警循环启停（VehicleStore 掌握节奏）=====
-      // 阈值: warning 30-49 / high 50-74 / critical ≥75（critical 暂不处理硬件刹车）
       if (alertLevel !== prevAlertLevelRef.current) {
         if (alertLevel === 'warning') {
           startAlertLoop('warning');  // 5s 一次
         } else if (alertLevel === 'high') {
           startAlertLoop('high');     // 5s 一次
+        } else if (alertLevel === 'critical') {
+          startAlertLoop('critical'); // 3s 一次，紧急提醒
         } else if (alertLevel === 'normal') {
           stopAlertLoop();            // 等级恢复 → 停止告警
         }
-        // warning/high 变化时再写一次文字记录（NotifyPanel 看到）
-        if (alertLevel === 'warning' || alertLevel === 'high') {
-          const detail = `疲劳预警：检测到${levelText[alertLevel]}！当前疲劳评分 ${fatigueScore} 分，建议${alertLevel === 'critical' ? '立即停车休息' : '谨慎驾驶'}`;
-          // 文字记录：通过 voiceAlertRef 桥接，RightPanel 里 pushAlert 会写
-          // 这里仍调 voiceAlertRef 只是为了写日志（opts.loop=true 也会跳冷却）
+        // warning/high/critical 变化时写文字记录
+        if (alertLevel === 'warning' || alertLevel === 'high' || alertLevel === 'critical') {
+          const backendMsg = cam?.alert_message;
+          const detail = backendMsg || `疲劳预警：检测到${levelText[alertLevel]}！当前疲劳评分 ${fatigueScore} 分，建议${alertLevel === 'critical' ? '立即停车休息' : '谨慎驾驶'}`;
           voiceAlertRef.current?.(detail, alertLevel, { logOnly: true, loop: false });
         }
       }
@@ -684,9 +653,11 @@ export function VehicleProvider({ children }) {
         if (alertLevel === 'normal') {
           message = `驾驶${Math.floor(minutes)}分钟，状态良好`;
         } else if (alertLevel === 'warning') {
-          message = `已驾驶${Math.floor(minutes)}分钟，检测到疲劳迹象，建议休息`;
-        } else {
-          message = `已连续驾驶${Math.floor(minutes)}分钟，疲劳程度高，请立即休息！`;
+          message = cam?.alert_message || `已驾驶${Math.floor(minutes)}分钟，检测到疲劳迹象，建议休息`;
+        } else if (alertLevel === 'high') {
+          message = cam?.alert_message || `已连续驾驶${Math.floor(minutes)}分钟，疲劳程度高，请立即休息！`;
+        } else if (alertLevel === 'critical') {
+          message = cam?.alert_message || `危险！严重疲劳，请立即停车休息！`;
         }
 
         const newAlert = { time, type: alertLevel, message };
@@ -815,7 +786,6 @@ export function VehicleProvider({ children }) {
   }, []);
 
   const startAlertLoop = useCallback((level) => {
-    if (level === 'critical') return; // 严重疲劳暂不处理（没有硬件刹车）
     if (currentAlertLevelRef.current === level) return; // 等级不变，不重复启动
     stopAlertLoop();
     currentAlertLevelRef.current = level;
@@ -828,7 +798,10 @@ export function VehicleProvider({ children }) {
 
     trigger(); // 立即播第一条
 
-    if (level === 'warning') {
+    if (level === 'critical') {
+      // 严重疲劳：每 3 秒一次紧急提醒
+      alertTimerRef.current = setInterval(trigger, 3000);
+    } else if (level === 'warning') {
       alertTimerRef.current = setInterval(trigger, 5000);
     } else if (level === 'high') {
       // 中度疲劳：每 5 秒一次
@@ -870,7 +843,7 @@ export function VehicleProvider({ children }) {
       vehicle, safety, weather, location,
       cameraActive, camEmotion, camSafety,
       toggleDriving, setDriving, getDrivingDuration,
-      refreshLocation, setCity, loadRealWeather, recordFatigueEvent,
+      refreshLocation, setCity, setCityBySearch, loadRealWeather, recordFatigueEvent,
       setVoiceAlertCallback,
       setGreetingCallback,
     }}>

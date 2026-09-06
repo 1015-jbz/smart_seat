@@ -123,10 +123,29 @@ export const api = {
     }
   },
 
-  /** IP 定位代理 GET /location，返回 {city, latitude, longitude, pro, source?} 或 null */
+  /** IP 定位代理 GET /location，返回 {city, district, province, latitude, longitude, source} 或 null */
   location: async () => {
     const data = await apiFetch('/location', { timeout: 10000 });
     if (!data || data.error) return null;
+    return data;
+  },
+
+  /** 逆地理编码 POST /location/regeo，经纬度 → 中文地址（街道级） */
+  regeo: async (latitude, longitude) => {
+    const data = await apiFetch('/location/regeo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latitude, longitude }),
+      timeout: 10000,
+    });
+    if (!data || data.error) return null;
+    return data;
+  },
+
+  /** 城市搜索 GET /location/search?city=xxx，返回多个匹配结果 */
+  searchCity: async (keyword) => {
+    const data = await apiFetch(`/location/search?city=${encodeURIComponent(keyword)}`, { timeout: 10000 });
+    if (!data) return null;
     return data;
   },
 
