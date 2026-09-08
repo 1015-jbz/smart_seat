@@ -9,6 +9,21 @@ import MiniChat from './MiniChat';
 import RecordingBar from './RecordingBar';
 
 const WAKE_WORD = '小龙';
+// 唤醒词容错表：识别引擎经常把「小龙」转写成同音字或繁体，精确匹配会漏判
+const WAKE_ALIASES = [WAKE_WORD, '小龍', '晓龙', '小隆', '小珑', '笑龙', 'xiaolong'];
+
+// 去掉空白与标点，统一小写后再比对
+function normalizeHeard(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/[\s，。、！？,.!?·…「」『』"'（）()【】]/g, '');
+}
+
+function isWakeWordHeard(raw) {
+  const t = normalizeHeard(raw);
+  if (!t) return false;
+  return WAKE_ALIASES.some(alias => t.includes(normalizeHeard(alias)));
+}
 
 // ===== 本地命令识别（与 VoiceAssistant 保持一致）=====
 function localCommandMatch(text) {
@@ -39,10 +54,10 @@ function localCommandMatch(text) {
 }
 
 export default function RightPanel() {
-  const { setVoiceAlertCallback, setGreetingCallback, location, weather } = useVehicle();
+  const { setVoiceAlertCallback, setGreetingCallback, location, weather, camEmotion, camSafety } = useVehicle();
   const {
     pushAlert, enqueueSpeech, pushMessage,
-    voicePhase, setVoicePhase, audioLevel, setAudioLevel,
+    voicePhase, setVoicePhase, audioLevel, setAudioLevel, setEmotion,
   } = useVoice();
   const handleMusicCommand = useMusicVoiceCommand();
 
@@ -56,6 +71,8 @@ export default function RightPanel() {
   const processedRef = useRef(false);
   const [wakeListening, setWakeListening] = useState(false);
   const [micError, setMicError] = useState(null);
+  // 诊断用：显示唤醒监听最近听到的内容，便于判断“是听不到”还是“听到了没匹配上”
+  const [wakeHeard, setWakeHeard] = useState('');
   const isRecordingRef = useRef(false);
 
   // ===== 清理：组件卸载时释放所有硬件资源 =====
@@ -165,6 +182,7 @@ export default function RightPanel() {
         };
         recognition.onerror = (e) => {
           if (e.error === 'not-allowed') setMicError('麦克风权限被拒绝');
+          if (e.error === 'network') setMicError('语音识别服务连接失败（Chrome 依赖 Google 服务），请改用 Edge 浏览器');
         };
         recognition.onend = () => {
           if (streamRef.current && recRef.current === recognition && !processedRef.current) {
@@ -196,10 +214,21 @@ export default function RightPanel() {
     startRecording();
   }, [pushMessage, enqueueSpeech, setVoicePhase, startRecording]);
 
+  // ===== 手动唤醒：语音识别不可用时的兜底入口 =====
+  const handleManualWake = useCallback(() => {
+    if (isRecordingRef.current || voicePhase !== 'idle') return;
+    setMicError(null);
+    setWakeHeard('');
+    triggerWake();
+  }, [triggerWake, voicePhase]);
+
   // ===== 全局唤醒监听（持续运行，所有页面生效）=====
   const startWakeListen = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (!SR) {
+      setMicError('当前浏览器不支持语音识别，请使用 Chrome 或 Edge');
+      return;
+    }
     if (wakeRecRef.current || isRecordingRef.current) return;
     try {
       const wakeRec = new SR();
@@ -208,17 +237,36 @@ export default function RightPanel() {
       wakeRec.interimResults = true;
       wakeRec.onresult = (event) => {
         for (let i = 0; i < event.results.length; i++) {
-          const text = event.results[i][0].transcript.toLowerCase();
-          if (text.includes(WAKE_WORD.toLowerCase())) {
+          const raw = event.results[i][0].transcript;
+          setWakeHeard(raw.trim().slice(0, 20));
+          if (isWakeWordHeard(raw)) {
             try { wakeRec.abort(); } catch(e) {}
             wakeRecRef.current = null;
             setWakeListening(false);
+            setWakeHeard('');
             setTimeout(() => { triggerWake(); }, 50);
             break;
           }
         }
       };
+      wakeRec.onstart = () => {
+        // 真正启动成功后再清掉旧的错误提示
+        setMicError(null);
+      };
       wakeRec.onerror = (e) => {
+        // 致命错误：停止重试并在界面上显示原因（之前静默失败导致“没反应”）
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          setMicError('麦克风权限被拒绝：点地址栏左侧网站图标 → 允许麦克风 → 刷新页面');
+          wakeRecRef.current = null;
+          setWakeListening(false);
+          return;
+        }
+        if (e.error === 'network') {
+          setMicError('语音识别服务连接失败（Chrome 依赖 Google 服务，国内网络受限），请改用 Edge 浏览器');
+          wakeRecRef.current = null;
+          setWakeListening(false);
+          return;
+        }
         if (e.error !== 'no-speech' && e.error !== 'aborted') {
           console.warn('全局唤醒监听错误:', e.error);
         }
@@ -239,11 +287,29 @@ export default function RightPanel() {
   // 挂载后启动全局唤醒监听
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (!SR) {
+      // 内置预览窗口 / 非 Chromium 浏览器没有语音识别能力，必须显式告知用户
+      setWakeListening(false);
+      setMicError('当前窗口不支持语音识别：请在 Chrome 或 Edge 浏览器中打开 http://localhost:5173（可点下方“手动唤醒”或改用文字对话）');
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMicError('当前环境无法访问麦克风：需用 localhost 或 https 地址打开页面');
+      return;
+    }
     // 等 1.5s 让页面就绪再启动，避免与其他初始化抢资源
     const t = setTimeout(() => startWakeListen(), 1500);
     return () => clearTimeout(t);
   }, [startWakeListen]);
+
+  // ===== 情绪联动：摄像头表情/疲劳 → TTS 自动切音 =====
+  // 放在常驻的右栏而不是语音页，离开该页情绪切音依旧生效；疲劳优先于表情
+  useEffect(() => {
+    const emotion = (camSafety?.alertLevel && camSafety.alertLevel !== 'normal')
+      ? 'fatigue'
+      : (camEmotion?.label || camEmotion || 'neutral');
+    setEmotion(emotion);
+  }, [camEmotion, camSafety, setEmotion]);
 
   // ===== 疲劳告警回调（保留原逻辑）=====
   useEffect(() => {
@@ -278,17 +344,27 @@ export default function RightPanel() {
       {/* 全局录音指示条：所有页面恒挂载，根据 voicePhase 决定是否显示 */}
       <div className="flex-shrink-0">
         <RecordingBar phase={voicePhase} audioLevel={audioLevel} />
-        {wakeListening && voicePhase === 'idle' && (
-          <div className="mt-2 flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg animate-pulse text-xs"
+        {voicePhase === 'idle' && (
+          <div className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
                style={{ background: 'rgba(0,212,255,0.06)', border: '1px solid rgba(0,212,255,0.15)' }}>
-            <span style={{ color: '#00d4ff' }}>●</span>
-            <span style={{ color: 'var(--color-text-secondary)' }}>
-              唤醒词「<span style={{ color: '#00d4ff', fontWeight: 600 }}>小龙</span>」聆听中
+            <span className={wakeListening ? 'animate-pulse' : ''}
+                  style={{ color: wakeListening ? '#00d4ff' : '#6b7280', flexShrink: 0 }}>●</span>
+            <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--color-text-secondary)' }}>
+              {wakeListening ? (
+                wakeHeard
+                  ? <>听到：“{wakeHeard}”</>
+                  : <>唤醒词「<span style={{ color: '#00d4ff', fontWeight: 600 }}>{WAKE_WORD}</span>」聆听中</>
+              ) : '唤醒监听未运行'}
             </span>
+            <button onClick={handleManualWake} title="不用喊唤醒词，直接开始语音对话"
+                    className="flex-shrink-0 px-2 py-0.5 rounded transition-all hover:scale-105"
+                    style={{ border: '1px solid rgba(0,212,255,0.35)', color: '#00d4ff', background: 'rgba(0,212,255,0.08)' }}>
+              手动唤醒
+            </button>
           </div>
         )}
         {micError && (
-          <div className="mt-2 text-xs px-2 py-1 rounded" style={{ color: '#ff4757', background: 'rgba(255,71,87,0.08)' }}>
+          <div className="mt-2 text-xs px-2 py-1.5 rounded leading-relaxed" style={{ color: '#ff4757', background: 'rgba(255,71,87,0.08)' }}>
             {micError}
           </div>
         )}

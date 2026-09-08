@@ -14,6 +14,32 @@ const nowHHMM = () => {
 
 const QUICK_COMMANDS = ['小龙', '导航到北京站', '播放流行音乐', '来一首轻音乐', '温度调到24度', '打开全部车窗', '明天天气'];
 
+// 情绪 → 中文标签 / 主题色（键名与后端 EMOTION_VOICE_MAP 一致）
+const EMOTION_ZH = {
+  happy: '开心', sad: '悲伤', angry: '愤怒', surprised: '惊讶',
+  fearful: '恐惧', disgusted: '厌恶', neutral: '平静', fatigue: '疲劳',
+};
+const EMOTION_COLORS = {
+  happy: '#fbbf24', sad: '#60a5fa', angry: '#f87171', surprised: '#a78bfa',
+  fearful: '#34d399', disgusted: '#94a3b8', neutral: '#34d399', fatigue: '#fb923c',
+};
+
+// 后端 TTS 引擎标识 → 面板文案
+const ENGINE_ZH = {
+  'edge-tts': 'Edge TTS（神经网络）',
+  winrt: 'WinRT 本地语音',
+  pyttsx3: 'pyttsx3 基础语音',
+  browser: '浏览器内置（TTS 服务未启动）',
+  checking: '检测中…',
+};
+
+// 滑块配置：每格实际调整量取自 mockData，与后端 OFFSET_STEP 一致
+const OFFSET_SLIDERS = [
+  { key: 'speedOffset', label: '语速偏移', stepKey: 'rate', unit: '%' },
+  { key: 'pitchOffset', label: '音高偏移', stepKey: 'pitch', unit: 'Hz' },
+  { key: 'volumeOffset', label: '音量偏移', stepKey: 'volume', unit: '%' },
+];
+
 function AudioVisualizer({ analyser, isActive }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
@@ -52,17 +78,20 @@ function AudioVisualizer({ analyser, isActive }) {
 
 export default function VoiceAssistant() {
   const { username } = useOutletContext();
-  const { location } = useVehicle();
+  const { location, camEmotion, camSafety } = useVehicle();
   // voicePhase / audioLevel 从全局 VoiceStore 读取 → RecordingBar 在右侧栏全局展示
   const {
     messages, pushMessage, clearMessages, enqueueSpeech,
     voicePhase, setVoicePhase, audioLevel, setAudioLevel,
+    voiceSettings: voiceCfg, setVoiceSettings, setEmotion, ttsEngine, previewVoice,
   } = useVoice();
   const handleMusicCommand = useMusicVoiceCommand();
 
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
-  const [settings, setSettings] = useState(voiceSettings);
+  // 角色/风格目录是静态的；可调参数（角色/语速/音高/音量）统一存在全局 VoiceStore，
+  // 这样切到别的页面、甚至刷新后音色仍然生效
+  const catalog = voiceSettings;
   const [micError, setMicError] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [speechSupported, setSpeechSupported] = useState(false);
@@ -82,6 +111,19 @@ export default function VoiceAssistant() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     setSpeechSupported(!!SR);
   }, []);
+
+  // ===== 情绪联动：摄像头表情/疲劳 → 写入全局，TTS 合成时自动叠加音色参数 =====
+  // 疲劳告警优先于表情（安全相关，语气要更柔、更慢）
+  const currentEmotion = (camSafety?.alertLevel && camSafety.alertLevel !== 'normal')
+    ? 'fatigue'
+    : (camEmotion?.label || camEmotion || 'neutral');
+  useEffect(() => {
+    setEmotion(currentEmotion);
+  }, [currentEmotion, setEmotion]);
+
+  const emotionZh = EMOTION_ZH[currentEmotion] || '平静';
+  const emotionColor = EMOTION_COLORS[currentEmotion] || '#34d399';
+  const roleProfile = catalog.roleProfiles?.[voiceCfg.selectedRole] || {};
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -476,44 +518,79 @@ export default function VoiceAssistant() {
             </div>
           </div>
 
+          {/* 情绪切音 */}
+          <div className="mb-5 p-3 rounded-xl" style={{ background: `${emotionColor}0a`, border: `1px solid ${emotionColor}30` }}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold" style={{ color: 'var(--color-text-main)' }}>情绪切音</span>
+              <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: `${emotionColor}20`, color: emotionColor }}>{emotionZh}</span>
+            </div>
+            <div className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+              摄像头识别表情后，自动在角色基准参数上叠加语速/音高/音量调整
+            </div>
+          </div>
+
           {/* 语音角色 */}
           <div className="mb-5">
-            <label className="text-xs mb-2 block" style={{ color: 'var(--color-text-secondary)' }}>语音角色</label>
-            <select value={settings.selectedRole} onChange={(e) => setSettings({ ...settings, selectedRole: Number(e.target.value) })}
-              className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+            <label className="text-xs mb-2 block" style={{ color: 'var(--color-text-secondary)' }}>语音角色（8 种声线，切换立即生效）</label>
+            <select value={voiceCfg.selectedRole} onChange={(e) => setVoiceSettings({ selectedRole: Number(e.target.value) })}
+              className="w-full px-3 py-2 rounded-lg text-sm outline-none cursor-pointer"
               style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--color-border-glow)', color: 'var(--color-text-primary)' }}>
-              {settings.roles.map((r, i) => <option key={i} value={i} style={{ background: '#0a0e1a' }}>{r}</option>)}
+              {catalog.roles.map((r, i) => (
+                <option key={r} value={i} style={{ background: '#0a0e1a' }}>
+                  {r}{catalog.roleCategories?.[i] ? `（${catalog.roleCategories[i]}）` : ''}
+                </option>
+              ))}
             </select>
+            <div className="mt-2 text-xs px-2 py-1.5 rounded-lg space-y-0.5" style={{ background: 'rgba(0,212,255,0.06)', color: 'var(--color-text-secondary)' }}>
+              <div>当前：<span style={{ color: '#00d4ff', fontWeight: 600 }}>{catalog.roles[voiceCfg.selectedRole]}</span></div>
+              <div style={{ opacity: 0.75 }}>声线：{catalog.roleVoices?.[voiceCfg.selectedRole]}</div>
+              <div style={{ opacity: 0.75 }}>基准：语速 {roleProfile.rate} · 音高 {roleProfile.pitch} · 音量 {roleProfile.volume}</div>
+            </div>
           </div>
 
-          <div className="mb-5">
-            <div className="flex justify-between mb-2">
-              <label className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>音高偏移</label>
-              <span className="text-xs font-medium text-[var(--color-primary)]">{settings.pitchOffset > 0 ? '+' : ''}{settings.pitchOffset}</span>
-            </div>
-            <input type="range" min="-5" max="5" value={settings.pitchOffset}
-              onChange={(e) => setSettings({ ...settings, pitchOffset: Number(e.target.value) })} className="w-full" />
-          </div>
+          {/* 音色微调：语速 / 音高 / 音量（真实下发到后端合成参数）*/}
+          {OFFSET_SLIDERS.map(({ key, label, stepKey, unit }) => {
+            const value = voiceCfg[key] ?? 0;
+            const per = catalog.offsetStep?.[stepKey] ?? 5;
+            const delta = value * per;
+            return (
+              <div className="mb-5" key={key}>
+                <div className="flex justify-between mb-2">
+                  <label className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{label}</label>
+                  <span className="text-xs font-medium text-[var(--color-primary)]">
+                    {value > 0 ? '+' : ''}{value} 格（{delta > 0 ? '+' : ''}{delta}{unit}）
+                  </span>
+                </div>
+                <input type="range" min={-catalog.offsetLimit} max={catalog.offsetLimit} value={value}
+                  onChange={(e) => setVoiceSettings({ [key]: Number(e.target.value) })} className="w-full" />
+              </div>
+            );
+          })}
 
-          <div className="mb-5">
-            <div className="flex justify-between mb-2">
-              <label className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>语速偏移</label>
-              <span className="text-xs font-medium text-[var(--color-primary)]">{settings.speedOffset > 0 ? '+' : ''}{settings.speedOffset}</span>
-            </div>
-            <input type="range" min="-5" max="5" value={settings.speedOffset}
-              onChange={(e) => setSettings({ ...settings, speedOffset: Number(e.target.value) })} className="w-full" />
+          {/* 试听 / 重置 */}
+          <div className="mb-5 flex gap-2">
+            <button onClick={() => previewVoice()}
+              className="flex-1 py-2 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all hover:scale-[1.02]"
+              style={{ background: 'rgba(0,212,255,0.12)', border: '1px solid var(--color-primary)', color: 'var(--color-primary)' }}>
+              <Volume2 size={13} /> 试听当前音色
+            </button>
+            <button onClick={() => setVoiceSettings({ speedOffset: 0, pitchOffset: 0, volumeOffset: 0 })}
+              className="px-3 py-2 rounded-lg text-xs transition-all"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--color-border-glow)', color: 'var(--color-text-secondary)' }}>
+              重置微调
+            </button>
           </div>
 
           <div className="mb-5">
             <label className="text-xs mb-2 block" style={{ color: 'var(--color-text-secondary)' }}>风格预设</label>
             <div className="grid grid-cols-2 gap-2">
-              {settings.styles.map((style, i) => (
-                <button key={style} onClick={() => setSettings({ ...settings, selectedStyle: i })}
+              {catalog.styles.map((style, i) => (
+                <button key={style} onClick={() => setVoiceSettings({ selectedStyle: i })}
                   className="px-3 py-2 rounded-lg text-xs transition-all"
                   style={{
-                    background: settings.selectedStyle === i ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.03)',
-                    border: `1px solid ${settings.selectedStyle === i ? 'var(--color-primary)' : 'var(--color-border-glow)'}`,
-                    color: settings.selectedStyle === i ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                    background: voiceCfg.selectedStyle === i ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.03)',
+                    border: `1px solid ${voiceCfg.selectedStyle === i ? 'var(--color-primary)' : 'var(--color-border-glow)'}`,
+                    color: voiceCfg.selectedStyle === i ? 'var(--color-primary)' : 'var(--color-text-secondary)',
                   }}>{style}</button>
               ))}
             </div>
@@ -526,6 +603,10 @@ export default function VoiceAssistant() {
               <span className="text-xs font-semibold" style={{ color: 'var(--color-text-main)' }}>设备状态</span>
             </div>
             <div className="space-y-1.5">
+              <div className="flex justify-between gap-2">
+                <span className="text-xs flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>语音合成引擎</span>
+                <span className="text-xs text-right" style={{ color: ttsEngine === 'browser' ? '#ffa502' : '#00ff88' }}>{ENGINE_ZH[ttsEngine] || ttsEngine}</span>
+              </div>
               <div className="flex justify-between">
                 <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>麦克风</span>
                 <span className="text-xs" style={{ color: isRecording ? '#00ff88' : 'var(--color-text-muted)' }}>{isRecording ? '已连接' : '未激活'}</span>

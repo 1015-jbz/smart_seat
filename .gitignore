@@ -40,6 +40,9 @@ pip_stderr.txt
 .pids/
 logs/
 
+# TTS 预生成语音缓存（由 backend/pregen_voices.py 生成，可随时重建）
+backend/voice_cache/
+
 # Environment variables
 .env
 .env.local

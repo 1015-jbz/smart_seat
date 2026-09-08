@@ -52,11 +52,49 @@ export const voiceMessages = [
   { role: 'assistant', text: '已为您将空调温度调低至22℃，风量调至中档。', time: '14:32' },
 ];
 
+// 音色角色：与后端 backend/tts_server.py 的 EDGE_VOICE_MAP / ROLE_INFO 一一对应（role id = 数组下标）
 export const voiceSettings = {
-  roles: ['晓伊・活泼动漫少女', '小明・沉稳男声', '雪儿・温柔女声', '机器人・电子合成音'],
-  selectedRole: 0,
-  pitchOffset: 0,
+  roles: [
+    '晓伊・活泼少女',
+    '小梦・甜美少女',
+    '晓晓・温柔姐姐',
+    '云希・阳光少年',
+    '云健・热血青年',
+    '云扬・专业播报',
+    '晓北・东北话',
+    '晓妮・陕西话',
+  ],
+  roleCategories: ['动漫风', '动漫风', '温柔日常', '温柔日常', '温柔日常', '专业播报', '方言趣味', '方言趣味'],
+  roleGenders: ['female', 'female', 'female', 'male', 'male', 'male', 'female', 'female'],
+  roleVoices: [
+    'zh-CN-XiaoyiNeural',
+    'zh-CN-XiaoxiaoNeural',
+    'zh-CN-XiaoxiaoNeural',
+    'zh-CN-YunxiNeural',
+    'zh-CN-YunjianNeural',
+    'zh-CN-YunyangNeural',
+    'zh-CN-liaoning-XiaobeiNeural',
+    'zh-CN-shaanxi-XiaoniNeural',
+  ],
+  // 角色基准参数（后端同名配置的前端镜像，仅用于面板展示）
+  roleProfiles: [
+    { rate: '+12%', pitch: '+5Hz', volume: '+0%' },
+    { rate: '+10%', pitch: '+6Hz', volume: '+0%' },
+    { rate: '-5%', pitch: '-2Hz', volume: '+0%' },
+    { rate: '+0%', pitch: '+0Hz', volume: '+0%' },
+    { rate: '+8%', pitch: '-2Hz', volume: '+8%' },
+    { rate: '-8%', pitch: '-5Hz', volume: '+0%' },
+    { rate: '+3%', pitch: '-3Hz', volume: '+0%' },
+    { rate: '-2%', pitch: '-2Hz', volume: '+0%' },
+  ],
+  selectedRole: 2,
+  // 手动微调（-5..+5 格），叠加在角色基准 + 情绪调整之上
   speedOffset: 0,
+  pitchOffset: 0,
+  volumeOffset: 0,
+  // 滑块量纲：每格对应的实际调整量，与后端 OFFSET_STEP 保持一致
+  offsetStep: { rate: 5, pitch: 2, volume: 4 },
+  offsetLimit: 5,
   styles: ['默认', '新闻播报', '有声读物', '客服模式'],
   selectedStyle: 0,
 };

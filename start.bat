@@ -30,13 +30,18 @@ if exist "%VENV_PY%" (
 
 echo === Smart Cockpit - Starting... ===
 
-echo [1/3] Camera + Emotion Server :7861
+echo [1/4] Camera + Emotion Server :7861
 start "Camera-Server" "%PY%" "%~dp0backend\camera_server.py" --port 7861
 
-echo [2/3] Backend API :8000
+echo [2/4] Backend API :8000
 start "Backend-API" "%PY%" "%~dp0backend\main.py"
 
-echo [3/3] Frontend :5173
+echo [3/4] TTS Voice Server :7862
+REM 语音合成服务：8 种音色角色 + 情绪切音 + 语速/音高/音量微调
+REM 挂掉时前端会自动降级到浏览器内置语音，不影响其他功能
+start "TTS-Server" "%PY%" "%~dp0backend\tts_server.py" --port 7862
+
+echo [4/4] Frontend :5173
 echo [INFO] Serving pre-built dist folder...
 if exist "%~dp0dist\index.html" (
     start "Frontend" "%PY%" "%~dp0backend\static_server.py" 5173 "%~dp0dist"
@@ -50,10 +55,11 @@ echo === All services starting ===
 echo Frontend : http://localhost:5173
 echo Camera   : http://localhost:7861/video_feed
 echo API docs : http://localhost:8000/docs
+echo TTS      : http://localhost:7862/api/health
 echo.
 
 timeout /t 8 /nobreak >nul
 start http://localhost:5173
 
-echo Done! Close the 3 service windows to stop.
+echo Done! Close the 4 service windows to stop.
 pause
