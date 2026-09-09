@@ -42,8 +42,12 @@ REM 挂掉时前端会自动降级到浏览器内置语音，不影响其他功�
 start "TTS-Server" "%PY%" "%~dp0backend\tts_server.py" --port 7862
 
 echo [4/4] Frontend :5173
-echo [INFO] Serving pre-built dist folder...
+if not exist "%~dp0dist\index.html" (
+    echo [INFO] dist 不存在，先自动构建前端...
+    call npm run build
+)
 if exist "%~dp0dist\index.html" (
+    echo [INFO] Serving pre-built dist folder...
     start "Frontend" "%PY%" "%~dp0backend\static_server.py" 5173 "%~dp0dist"
 ) else (
     echo [ERROR] dist/index.html not found! Run: npm run build

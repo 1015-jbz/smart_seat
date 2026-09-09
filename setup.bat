@@ -91,6 +91,16 @@ if %errorlevel% neq 0 (
     echo [√] 前端依赖已安装
 )
 
+:: 构建前端静态文件（start.bat 依赖 dist/index.html）
+echo.
+echo [*] 构建前端静态文件...
+call npm run build
+if %errorlevel% neq 0 (
+    echo [警告] 前端构建失败，请稍后手动运行: npm run build
+) else (
+    echo [√] 前端已构建到 dist 目录
+)
+
 :: 下载 ONNX 表情模型
 echo.
 if not exist "backend\models\enet_b2_7.onnx" (
