@@ -56,7 +56,9 @@ async def regeo_location(req: RegeoRequest):
     返回: { city, district, province, address, latitude, longitude, source: "gps" }
     """
     try:
+        print(f"[location] regeo 收到坐标: lat={req.latitude}, lon={req.longitude}")
         result = await regeo_by_amap(req.latitude, req.longitude)
+        print(f"[location] regeo 结果: {result}")
         if result is None:
             # 高德不可用时，用本地城市库找最近城市
             nearest = None

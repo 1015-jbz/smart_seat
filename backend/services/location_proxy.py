@@ -135,7 +135,7 @@ async def _locate_via_amap_ip() -> Optional[dict]:
 
 
 async def regeo_by_amap(latitude: float, longitude: float) -> Optional[dict]:
-    """高德逆地理编码：经纬度 → 中文地址（街道级）。
+    """高德逆地理编码：经纬度 → 中文地址。
 
     免费额度：30万次/日，需 AMAP_KEY。
     返回: {city, district, address, province, latitude, longitude, source: "gps"}
@@ -149,7 +149,7 @@ async def regeo_by_amap(latitude: float, longitude: float) -> Optional[dict]:
                 "key": AMAP_KEY,
                 "location": f"{longitude},{latitude}",
                 "extensions": "base",
-                "radius": 1000,  # 1km 范围内
+                "radius": 1000,
             })
             data = resp.json()
 
@@ -164,7 +164,6 @@ async def regeo_by_amap(latitude: float, longitude: float) -> Optional[dict]:
         district = addr_component.get("district") or ""
         formatted = regeo.get("formatted_address") or ""
 
-        # city 可能为空（直辖市），用 province 代替
         city_clean = _strip_suffix(city) or _strip_suffix(province) or ""
         prov_clean = _strip_suffix(province) or ""
         dist_clean = _strip_suffix(district) or ""
@@ -338,6 +337,17 @@ async def locate_by_ip() -> Optional[dict]:
     if AMAP_KEY:
         result = await _locate_via_amap_ip()
         if result:
+            # IP 定位拿到城市后，用本地城市库坐标 + 逆地理编码获取真实区县
+            # IP rectangle 中心点可能落在错误的区（如石家庄中心在桥西区而非长安区）
+            if result.get("latitude") and result.get("city"):
+                found = _match_local(result["city"], result.get("province", ""))
+                if found:
+                    regeo = await regeo_by_amap(found["lat"], found["lon"])
+                    if regeo and regeo.get("district"):
+                        result["district"] = regeo["district"]
+                        result["address"] = regeo.get("address")
+                        result["latitude"] = found["lat"]
+                        result["longitude"] = found["lon"]
             return result
 
     # 方案 2: 太平洋电脑网（市级精度，免费兜底）

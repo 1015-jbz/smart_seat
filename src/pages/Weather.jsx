@@ -22,7 +22,6 @@ function renderLocationText(loc) {
   }[loc.source] || '📍 定位';
 
   let detail = loc.city;
-  if (loc.district) detail = `${loc.city} · ${loc.district}`;
   if (loc.address) detail = loc.address;
 
   return `${prefix}：${detail}`;
@@ -170,7 +169,7 @@ export default function Weather() {
                   border: `1px solid ${location.located ? 'rgba(0,212,255,0.3)' : 'rgba(255,165,2,0.3)'}`,
                 }}>
                 <MapPin size={11} />
-                {location.city}{location.district ? ` · ${location.district}` : ''}
+                {location.city}
               </div>
             </div>
 
@@ -230,7 +229,7 @@ export default function Weather() {
                         <MapPin size={12} style={{ color: '#00d4ff', flexShrink: 0 }} />
                         <div className="flex-1 min-w-0">
                           <div className="text-xs font-medium" style={{ color: 'var(--color-text-main)' }}>
-                            {r.city}{r.district ? ` · ${r.district}` : ''}
+                            {r.city}
                           </div>
                           {r.address && (
                             <div className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
