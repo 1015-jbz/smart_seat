@@ -372,9 +372,9 @@ export default function VoiceAssistant() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-5" style={{ height: 'calc(100vh - 160px)' }}>
+      <div className="grid grid-cols-3 gap-5" style={{ height: 'calc(100vh - 160px)', gridTemplateRows: 'minmax(0, 1fr)' }}>
         {/* 聊天区域 */}
-        <div className="col-span-2 glass-card p-5 flex flex-col">
+        <div className="col-span-2 glass-card p-5 flex flex-col min-h-0">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <MessageCircle size={18} style={{ color: '#f472b6' }} />

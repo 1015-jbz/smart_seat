@@ -158,7 +158,7 @@ export default function Dashboard() {
                       </div>
                     )}
                     <div
-                      className="px-3 py-1.5 rounded-lg max-w-[80%] truncate"
+                      className="px-3 py-1.5 rounded-lg max-w-[80%] break-words whitespace-pre-wrap"
                       style={{
                         background: msg.role === 'user'
                           ? 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(0,255,136,0.1))'

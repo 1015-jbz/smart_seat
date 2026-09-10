@@ -65,7 +65,7 @@ export default function NotifyPanel() {
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="truncate" style={{ color: 'var(--color-text-main)' }}>
+                  <div className="break-words whitespace-pre-wrap" style={{ color: 'var(--color-text-main)' }}>
                     {msg.text}
                   </div>
                   <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
