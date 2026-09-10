@@ -1,32 +1,33 @@
 @echo off
 cd /d "%~dp0"
 
-REM === æ£€æµ‹ Python è·¯å¾„ ===
-REM ä¼˜å…ˆä½¿ç”¨é¡¹ç›®æ ¹ç›®å½•è™šæ‹Ÿç¯å¢ƒï¼Œå…¶æ¬¡ backend\.venvï¼Œæœ€åç³»ç»Ÿ Python
-set VENV_PY=%~dp0.venv\Scripts\python.exe
-if exist "%VENV_PY%" (
-    set PY=%VENV_PY%
-    echo [INFO] Using venv Python: %VENV_PY%
-) else (
-    set VENV_PY=%~dp0backend\.venv\Scripts\python.exe
-    if exist "%VENV_PY%" (
-        set PY=%VENV_PY%
-        echo [INFO] Using backend venv Python: %VENV_PY%
-    ) else (
-        where python >nul 2>nul
-        if errorlevel 1 (
-            echo [ERROR] Python not found! Please install Python 3.10+ or run setup.bat
-            pause
-            exit /b 1
-        )
-        for /f "delims=" %%i in ('where python') do (
-            set PY=%%i
-            goto found_py
-        )
-        :found_py
-        echo [INFO] Using system Python: %PY%
-    )
+REM === ¼ì²â Python Â·¾¶ ===
+REM ÓÅÏÈÊ¹ÓÃÏîÄ¿¸ùÄ¿Â¼ĞéÄâ»·¾³£¬Æä´Î backend\.venv£¬×îºóÏµÍ³ Python
+set "PY=%~dp0.venv\Scripts\python.exe"
+if exist "%PY%" goto :py_found
+
+set "PY=%~dp0backend\.venv\Scripts\python.exe"
+if exist "%PY%" goto :py_found
+
+where python >nul 2>nul
+if errorlevel 1 goto :py_missing
+for /f "delims=" %%i in ('where python') do (
+    set "PY=%%i"
+    goto :py_found
 )
+
+:py_missing
+echo [ERROR] Python not found! Please install Python 3.10+ or run setup.bat
+pause
+exit /b 1
+
+:py_found
+echo [INFO] Using Python: %PY%
+
+REM === ¹Ø±Õ±¾ÏîÄ¿µÄ¾É·şÎñ½ø³Ì£¨°´½Å±¾Â·¾¶Æ¥Åä£©£¬±ÜÃâÖØ¸´Æô¶¯ ===
+echo [*] ¹Ø±Õ¾ÉµÄ smart_seat ·şÎñ½ø³Ì£¨ÈçÓĞ£©...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*smart_seat*' }; $ids = @($p.ProcessId); $c = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $ids -contains $_.ParentProcessId }; @($ids + @($c.ProcessId)) | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+timeout /t 2 /nobreak >nul
 
 echo === Smart Cockpit - Starting... ===
 
@@ -37,13 +38,13 @@ echo [2/4] Backend API :8000
 start "Backend-API" "%PY%" "%~dp0backend\main.py"
 
 echo [3/4] TTS Voice Server :7862
-REM è¯­éŸ³åˆæˆæœåŠ¡ï¼š8 ç§éŸ³è‰²è§’è‰² + æƒ…ç»ªåˆ‡éŸ³ + è¯­é€Ÿ/éŸ³é«˜/éŸ³é‡å¾®è°ƒ
-REM æŒ‚æ‰æ—¶å‰ç«¯ä¼šè‡ªåŠ¨é™çº§åˆ°æµè§ˆå™¨å†…ç½®è¯­éŸ³ï¼Œä¸å½±å“å…¶ä»–åŠŸèƒ½
+REM ÓïÒôºÏ³É·şÎñ£º8 ÖÖÒôÉ«½ÇÉ« + ÇéĞ÷ÇĞÒô + ÓïËÙ/Òô¸ß/ÒôÁ¿Î¢µ÷
+REM ¹ÒµôÊ±Ç°¶Ë»á×Ô¶¯½µ¼¶µ½ä¯ÀÀÆ÷ÄÚÖÃÓïÒô£¬²»Ó°ÏìÆäËû¹¦ÄÜ
 start "TTS-Server" "%PY%" "%~dp0backend\tts_server.py" --port 7862
 
 echo [4/4] Frontend :5173
 if not exist "%~dp0dist\index.html" (
-    echo [INFO] dist ä¸å­˜åœ¨ï¼Œå…ˆè‡ªåŠ¨æ„å»ºå‰ç«¯...
+    echo [INFO] dist ²»´æÔÚ£¬ÏÈ×Ô¶¯¹¹½¨Ç°¶Ë...
     call npm run build
 )
 if exist "%~dp0dist\index.html" (
