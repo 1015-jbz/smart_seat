@@ -101,6 +101,30 @@ body {
   background: rgba(30, 41, 59, 0.95);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
+
+/* ===== 下拉菜单 / select / option 主题适配 ===== */
+select, .dropdown-menu {
+  color: var(--color-text-main);
+}
+select option {
+  background: var(--color-card-solid);
+  color: var(--color-text-main);
+}
+.dark select option {
+  background: #1e293b;
+  color: #f1f5f9;
+}
+select option:hover, select option:checked {
+  background: var(--color-primary);
+  color: #fff;
+}
+.dropdown-item:hover {
+  background: rgba(0, 212, 255, 0.08);
+}
+.dark .dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .dark .solid-card {
   background: var(--color-card-solid);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);

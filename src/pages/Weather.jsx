@@ -200,8 +200,8 @@ export default function Weather() {
                 )}
                 {/* 搜索结果 / 预设城市下拉 */}
                 {showDropdown && (
-                  <div className="absolute top-full left-0 right-0 mt-1 rounded-lg overflow-hidden z-50 max-h-72 overflow-y-auto"
-                    style={{ background: 'rgba(15,23,42,0.98)', border: '1px solid rgba(0,212,255,0.3)', backdropFilter: 'blur(10px)' }}>
+                  <div className="absolute top-full left-0 right-0 mt-1 rounded-lg overflow-hidden z-50 max-h-72 overflow-y-auto dropdown-menu"
+                    style={{ background: 'var(--color-card-solid)', border: '1px solid var(--color-border-glow)', backdropFilter: 'blur(10px)', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}>
                     {/* 搜索中 */}
                     {searching && (
                       <div className="flex items-center justify-center gap-2 py-3 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
@@ -224,8 +224,8 @@ export default function Weather() {
                       <button
                         key={i}
                         onClick={() => handleSelectResult(r)}
-                        className="w-full text-left px-3 py-2.5 transition-all hover:bg-white/5 flex items-center gap-2"
-                        style={{ borderBottom: i < searchResults.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none' }}
+                        className="w-full text-left px-3 py-2.5 transition-all flex items-center gap-2 dropdown-item"
+                        style={{ borderBottom: i < searchResults.length - 1 ? '1px solid var(--color-border)' : 'none' }}
                       >
                         <MapPin size={12} style={{ color: '#00d4ff', flexShrink: 0 }} />
                         <div className="flex-1 min-w-0">
@@ -248,16 +248,16 @@ export default function Weather() {
                     {/* 预设城市列表（搜索框为空时显示） */}
                     {!searching && !hasSearchText && (
                       <>
-                        <div className="px-3 py-2 text-xs font-medium" style={{ color: 'var(--color-text-secondary)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div className="px-3 py-2 text-xs font-medium" style={{ color: 'var(--color-text-secondary)', borderBottom: '1px solid var(--color-border)' }}>
                           热门城市
                         </div>
                         {CITY_COORDS.map((c, i) => (
                           <button
                             key={c.name}
                             onClick={() => handleSelectPresetCity(c.name)}
-                            className="w-full text-left px-3 py-2 transition-all hover:bg-white/5 flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 transition-all flex items-center gap-2 dropdown-item"
                             style={{
-                              borderBottom: i < CITY_COORDS.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                              borderBottom: i < CITY_COORDS.length - 1 ? '1px solid var(--color-border)' : 'none',
                               background: location.city === c.name ? 'rgba(0,212,255,0.08)' : 'transparent',
                             }}
                           >

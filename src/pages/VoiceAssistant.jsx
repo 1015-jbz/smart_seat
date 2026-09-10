@@ -6,7 +6,7 @@ import { useVehicle } from '../context/VehicleStore';
 import { useVoice } from '../context/VoiceStore';
 import { useMusicVoiceCommand } from '../context/MusicStore';
 import { api } from '../services/api';
-import { localCommandMatch } from '../services/voiceCommands';
+import { localCommandMatch, handleWeatherCommand } from '../services/voiceCommands';
 
 const nowHHMM = () => {
   const now = new Date();
@@ -150,6 +150,9 @@ export default function VoiceAssistant() {
     // 优先处理音乐指令（点歌/暂停/切歌/音量），真实控制播放器；本地未命中自动搜在线曲库
     const musicRes = await handleMusicCommand(text);
     if (musicRes) return { reply: musicRes.reply, source: 'local' };
+    // 天气查询（需要异步调用 API）
+    const weatherReply = await handleWeatherCommand(text, location);
+    if (weatherReply) return { reply: weatherReply, source: 'local' };
     const local = localCommand(text);
     if (local) return { reply: local, source: 'local' };
     setAiLoading(true);
@@ -512,9 +515,9 @@ export default function VoiceAssistant() {
             <label className="text-xs mb-2 block" style={{ color: 'var(--color-text-secondary)' }}>语音角色（8 种声线，切换立即生效）</label>
             <select value={voiceCfg.selectedRole} onChange={(e) => setVoiceSettings({ selectedRole: Number(e.target.value) })}
               className="w-full px-3 py-2 rounded-lg text-sm outline-none cursor-pointer"
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--color-border-glow)', color: 'var(--color-text-primary)' }}>
+              style={{ background: 'var(--color-card-solid)', border: '1px solid var(--color-border-glow)', color: 'var(--color-text-main)' }}>
               {catalog.roles.map((r, i) => (
-                <option key={r} value={i} style={{ background: '#0a0e1a' }}>
+                <option key={r} value={i}>
                   {r}{catalog.roleCategories?.[i] ? `（${catalog.roleCategories[i]}）` : ''}
                 </option>
               ))}

@@ -3,7 +3,7 @@ import { useVehicle } from '../context/VehicleStore';
 import { useVoice } from '../context/VoiceStore';
 import { useMusicVoiceCommand } from '../context/MusicStore';
 import { api } from '../services/api';
-import { localCommandMatch } from '../services/voiceCommands';
+import { localCommandMatch, handleWeatherCommand } from '../services/voiceCommands';
 import CameraFeed from './CameraFeed';
 import NotifyPanel from './NotifyPanel';
 import MiniChat from './MiniChat';
@@ -60,11 +60,14 @@ export default function RightPanel() {
     };
   }, []);
 
-  // ===== 生成回复（音乐指令 → 本地命令 → API → fallback）=====
+  // ===== 生成回复（音乐指令 → 天气 → 本地命令 → API → fallback）=====
   const generateReply = useCallback(async (text) => {
     // 优先处理音乐指令（点歌/暂停/切歌/音量），真实控制播放器；本地未命中自动搜在线曲库
     const musicRes = await handleMusicCommand(text);
     if (musicRes) return { reply: musicRes.reply, source: 'local' };
+    // 天气查询（需要异步调用 API）
+    const weatherReply = await handleWeatherCommand(text, location);
+    if (weatherReply) return { reply: weatherReply, source: 'local' };
     const local = localCommandMatch(text, setVoiceSettings);
     if (local) return { reply: local, source: 'local' };
     try {
