@@ -267,9 +267,28 @@ export function VehicleProvider({ children }) {
             saveLocation(loc);
           }
         },
-        (gpsError) => {
-          // GPS 失败/被拒 → 提示用户手动选择城市，不走 IP 定位
+        async (gpsError) => {
+          // GPS 失败/被拒 → 先尝试后端 IP 定位（高德IP区县精度 → pconline市级兜底）
           console.warn('[location] GPS 定位失败:', gpsError?.message || gpsError);
+          try {
+            const ipResult = await api.location();
+            if (ipResult && ipResult.city) {
+              const loc = {
+                city: ipResult.city,
+                district: ipResult.district || null,
+                province: ipResult.province || null,
+                address: null,
+                latitude: ipResult.latitude,
+                longitude: ipResult.longitude,
+                located: true, loading: false, error: null, denied: false,
+                source: ipResult.source || 'ip', manual: false,
+              };
+              setLocation(loc);
+              saveLocation(loc);
+              return;
+            }
+          } catch (_) { /* IP 定位也失败，走手动选择 */ }
+          // 全部失败 → 提示手动选择
           let msg = 'GPS 定位失败，请手动选择城市';
           if (gpsError?.code === 1) msg = '定位权限被拒绝，请在浏览器设置中允许位置访问';
           else if (gpsError?.code === 2) msg = 'GPS 信号不可用，请检查设备定位服务';
@@ -279,8 +298,28 @@ export function VehicleProvider({ children }) {
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     } else {
-      // 浏览器不支持 GPS
-      setLocation(prev => ({ ...prev, loading: false, located: false, error: '浏览器不支持 GPS 定位，请手动选择城市', denied: false }));
+      // 浏览器不支持 GPS → 直接走后端 IP 定位
+      (async () => {
+        try {
+          const ipResult = await api.location();
+          if (ipResult && ipResult.city) {
+            const loc = {
+              city: ipResult.city,
+              district: ipResult.district || null,
+              province: ipResult.province || null,
+              address: null,
+              latitude: ipResult.latitude,
+              longitude: ipResult.longitude,
+              located: true, loading: false, error: null, denied: false,
+              source: ipResult.source || 'ip', manual: false,
+            };
+            setLocation(loc);
+            saveLocation(loc);
+            return;
+          }
+        } catch (_) {}
+        setLocation(prev => ({ ...prev, loading: false, located: false, error: '浏览器不支持 GPS 定位，请手动选择城市', denied: false }));
+      })();
     }
   }, [saveLocation]);
 
