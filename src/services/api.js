@@ -293,12 +293,32 @@ export const api = {
    * AI 对话 POST /chat
    * @returns {{reply: string, source: 'deepseek'|'fallback'}|null}
    */
-  chat: async (message, context = {}) => {
+  chat: async (message, context = {}, source = 'text') => {
     const res = await apiFetch('/chat', {
       method: 'POST',
-      body: JSON.stringify({ message, context }),
+      body: JSON.stringify({ message, context, source }),
       timeout: 15000,
     });
+    if (!res || res.error) return null;
+    return res;
+  },
+
+  /**
+   * 获取对话历史 GET /chat/history
+   * @returns {{messages: Array<{id, role, content, source, timestamp}>}|null}
+   */
+  chatHistory: async () => {
+    const res = await apiFetch('/chat/history', { timeout: 5000 });
+    if (!res || res.error) return null;
+    return res;
+  },
+
+  /**
+   * 清空对话历史 DELETE /chat/history
+   * @returns {{success: boolean}|null}
+   */
+  clearChatHistory: async () => {
+    const res = await apiFetch('/chat/history', { method: 'DELETE', timeout: 5000 });
     if (!res || res.error) return null;
     return res;
   },

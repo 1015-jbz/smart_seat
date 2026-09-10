@@ -6,6 +6,7 @@ import { useVehicle } from '../context/VehicleStore';
 import { useVoice } from '../context/VoiceStore';
 import { useMusicVoiceCommand } from '../context/MusicStore';
 import { api } from '../services/api';
+import { localCommandMatch } from '../services/voiceCommands';
 
 const nowHHMM = () => {
   const now = new Date();
@@ -140,33 +141,10 @@ export default function VoiceAssistant() {
     };
   }, []);
 
-  // ===== 本地命令识别（与全局 RightPanel 保持一致）=====
+  // ===== 本地命令识别（使用共享模块）=====
   const localCommand = useCallback((text) => {
-    const lower = text.toLowerCase();
-    if (lower.includes('开窗') || lower.includes('打开窗')) {
-      if (lower.includes('全部') || lower.includes('所有')) return '好的，已为您打开全部车窗。';
-      if (lower.includes('主驾') || lower.includes('驾驶')) return '好的，已为您打开驾驶员侧车窗。';
-      return '好的，已为您打开驾驶员侧车窗。';
-    }
-    if (lower.includes('关窗') || lower.includes('关闭窗')) return '好的，已为您关闭全部车窗。';
-    if (lower.includes('温度') || lower.includes('空调')) {
-      const tempMatch = text.match(/(\d+)度/);
-      if (tempMatch) return `已将空调温度设置为${tempMatch[1]}度。`;
-      if (lower.includes('冷') || lower.includes('降温')) return '已调低空调温度，开启制冷模式。';
-      if (lower.includes('热') || lower.includes('升温')) return '已调高空调温度，开启制热模式。';
-      if (lower.includes('关闭') || lower.includes('关掉')) return '空调已关闭。';
-      return '已为您调整空调温度至22度。';
-    }
-    if (lower.includes('风速') || lower.includes('风量')) {
-      if (lower.includes('大') || lower.includes('强')) return '风量已调至高档。';
-      if (lower.includes('小') || lower.includes('弱')) return '风量已调至低档。';
-      return '风量已调至中档。';
-    }
-    // 音乐控制（播放/暂停/切歌/音量）由 useMusicVoiceCommand 真实控制播放器，不在此处理
-    if (lower.includes('接听')) return '已为您接通来电。';
-    if (lower.includes('挂断') || lower.includes('拒接')) return '通话已结束。';
-    return null;
-  }, []);
+    return localCommandMatch(text, setVoiceSettings);
+  }, [setVoiceSettings]);
 
   const generateReply = useCallback(async (text) => {
     // 优先处理音乐指令（点歌/暂停/切歌/音量），真实控制播放器；本地未命中自动搜在线曲库

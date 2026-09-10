@@ -32,13 +32,13 @@ export default class ErrorBoundary extends Component {
     return (
       <div className="flex flex-col items-center justify-center" style={{ minHeight: '60vh', padding: 32, textAlign: 'center' }}>
         <AlertTriangle size={56} style={{ color: 'var(--color-danger)', opacity: 0.6, marginBottom: 16 }} />
-        <h2 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-text-main)', marginBottom: 8 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 600, color: 'var(--color-text-main)', marginBottom: 8 }}>
           页面出现异常
         </h2>
-        <p style={{ fontSize: 13, color: 'var(--color-text-sub)', maxWidth: 420, marginBottom: 4, wordBreak: 'break-all' }}>
+        <p style={{ fontSize: 15, color: 'var(--color-text-sub)', maxWidth: 420, marginBottom: 4, wordBreak: 'break-all' }}>
           {msg}
         </p>
-        <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 20 }}>
+        <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 20 }}>
           可尝试重置当前视图，或返回首页继续使用。
         </p>
         <div className="flex gap-3">

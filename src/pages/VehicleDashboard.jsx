@@ -26,7 +26,7 @@ function SpeedGauge({ speed }) {
           <text
             x={100 + 56 * Math.cos(rad)} y={100 + 56 * Math.sin(rad)}
             textAnchor="middle" dominantBaseline="middle"
-            fill="var(--color-text-secondary)" fontSize="9"
+            fill="var(--color-text-secondary)" fontSize="10"
           >
             {i}
           </text>
@@ -59,8 +59,8 @@ function SpeedGauge({ speed }) {
       />
       <circle cx="100" cy="100" r="6" fill="#ff4757" />
       <circle cx="100" cy="100" r="3" fill="#0a0e1a" />
-      <text x="100" y="140" textAnchor="middle" fill="#00d4ff" fontSize="28" fontWeight="bold">{speed}</text>
-      <text x="100" y="155" textAnchor="middle" fill="var(--color-text-secondary)" fontSize="10">km/h</text>
+      <text x="100" y="140" textAnchor="middle" fill="#00d4ff" fontSize="32" fontWeight="bold">{speed}</text>
+      <text x="100" y="155" textAnchor="middle" fill="var(--color-text-secondary)" fontSize="12">km/h</text>
     </svg>
   );
 }
@@ -83,8 +83,8 @@ function MiniGauge({ value, max, label, unit, color, icon: Icon }) {
           transform="rotate(-225 45 45)" strokeLinecap="round"
           style={{ transition: 'stroke-dashoffset 0.8s ease', filter: `drop-shadow(0 0 4px ${color}60)` }}
         />
-        <text x="45" y="42" textAnchor="middle" fill={color} fontSize="14" fontWeight="bold">{value}</text>
-        <text x="45" y="55" textAnchor="middle" fill="var(--color-text-secondary)" fontSize="8">{unit}</text>
+        <text x="45" y="42" textAnchor="middle" fill={color} fontSize="16" fontWeight="bold">{value}</text>
+        <text x="45" y="55" textAnchor="middle" fill="var(--color-text-secondary)" fontSize="9">{unit}</text>
       </svg>
       <div className="flex items-center gap-1 mt-1">
         {Icon && <Icon size={12} style={{ color }} />}

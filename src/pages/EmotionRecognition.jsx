@@ -51,7 +51,7 @@ function EmotionTrendChart({ history }) {
         return (
           <g key={v}>
             <line x1={pad.left} y1={y} x2={pad.left + cW} y2={y} stroke="rgba(255,255,255,0.06)" strokeDasharray="3,3" />
-            <text x={pad.left - 5} y={y + 3} textAnchor="end" fill="rgba(255,255,255,0.3)" fontSize="9">{Math.round(v * 100)}%</text>
+            <text x={pad.left - 5} y={y + 3} textAnchor="end" fill="rgba(255,255,255,0.3)" fontSize="10">{Math.round(v * 100)}%</text>
           </g>
         );
       })}
@@ -60,7 +60,7 @@ function EmotionTrendChart({ history }) {
       {points.map((p, i) => (
         <g key={i}>
           <circle cx={p.x} cy={p.y} r="4" fill={p.color} stroke="#0a0e1a" strokeWidth="2" />
-          <text x={p.x} y={pad.top + cH + 15} textAnchor="middle" fill="rgba(255,255,255,0.4)" fontSize="8">{p.time.slice(3)}</text>
+          <text x={p.x} y={pad.top + cH + 15} textAnchor="middle" fill="rgba(255,255,255,0.4)" fontSize="9">{p.time.slice(3)}</text>
         </g>
       ))}
       <defs>
@@ -245,7 +245,7 @@ export default function EmotionRecognition() {
               {!cameraActive ? '未连接' : backendOnline ? '实时追踪中' : '后端离线'}
             </span>
             {cameraActive && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1"
+              <span className="px-1.5 py-0.5 rounded text-xs font-mono flex items-center gap-1"
                 style={{
                   background: backendOnline ? 'rgba(0,255,136,0.1)' : 'rgba(255,71,87,0.1)',
                   color: backendOnline ? '#00ff88' : '#ff4757',
@@ -353,7 +353,7 @@ export default function EmotionRecognition() {
           </div>
 
           {/* 能力状态 */}
-          <div className="mt-4 flex items-center gap-4 text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>
+          <div className="mt-4 flex items-center gap-4 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
             <Server size={12} />
             <span>OpenCV: {engineCapabilities.cv2 ? '✓' : '✗'}</span>
             <span>MediaPipe: {engineCapabilities.mediapipe ? '✓' : '✗'}</span>

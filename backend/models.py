@@ -6,6 +6,7 @@
 - EmotionRecord   情绪记录
 - UserSetting     用户设置（KV 表）
 - VehicleState    车辆状态快照
+- ChatMessage     对话历史
 """
 from datetime import datetime
 
@@ -77,3 +78,15 @@ class VehicleState(Base):
     tire_pressure_fr = Column(Float, default=2.4)
     tire_pressure_rl = Column(Float, default=2.4)
     tire_pressure_rr = Column(Float, default=2.4)
+
+
+class ChatMessage(Base):
+    """对话历史：存储用户和助手的对话记录。"""
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    role = Column(String(20), nullable=False)  # 'user' | 'assistant'
+    content = Column(Text, nullable=False)
+    source = Column(String(20), default="text")  # 'voice' | 'text' | 'deepseek'
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    session_id = Column(String(50), nullable=True, index=True)  # 可选：按会话分组

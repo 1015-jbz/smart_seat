@@ -177,7 +177,7 @@ export default function Dashboard() {
                       </div>
                     )}
                   </div>
-                  <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--color-text-muted)' }}>{msg.time}</span>
+                  <span className="text-xs flex-shrink-0" style={{ color: 'var(--color-text-muted)' }}>{msg.time}</span>
                 </div>
               ))}
             </div>

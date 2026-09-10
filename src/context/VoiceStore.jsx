@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { voiceMessages, voiceSettings as voiceDefaults } from '../data/mockData';
+import { api } from '../services/api';
 
 const VoiceContext = createContext();
 
@@ -56,7 +57,7 @@ function loadVoiceSettings() {
 const FEMALE_SOFT_KEYS = ['温柔', '女', '晓晓', '小希', '小雅', '小美', '晓晴', 'tingting', 'yaoyao', 'meijia', 'female'];
 
 export function VoiceProvider({ children }) {
-  const [messages, setMessages] = useState(voiceMessages);
+  const [messages, setMessages] = useState([]);
   const [latestAlert, setLatestAlert] = useState(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   // 全局录音阶段：'idle' | 'tts' | 'listening' | 'processing'
@@ -111,6 +112,8 @@ export function VoiceProvider({ children }) {
 
   const clearMessages = useCallback(() => {
     setMessages([]);
+    // 同时清空后端历史
+    api.clearChatHistory().catch(() => {});
   }, []);
 
   const pushAlert = useCallback((text, level = 'info') => {
@@ -183,6 +186,23 @@ export function VoiceProvider({ children }) {
     const timer = setInterval(probe, 60000);
     return () => { alive = false; clearInterval(timer); };
   }, [markTtsDown, markTtsUp]);
+
+  // 启动时从后端加载对话历史
+  useEffect(() => {
+    let alive = true;
+    api.chatHistory().then(res => {
+      if (!alive || !res?.messages?.length) return;
+      // 转换后端格式为前端格式
+      const loaded = res.messages.map(m => ({
+        role: m.role,
+        text: m.content,
+        time: new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        source: m.source || 'text',
+      }));
+      setMessages(loaded);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // ===== 播放入口 =====
   const speak = useCallback((text, priority = 'normal') => {

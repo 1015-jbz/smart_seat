@@ -68,7 +68,7 @@ export default function NotifyPanel() {
                   <div className="break-words whitespace-pre-wrap" style={{ color: 'var(--color-text-main)' }}>
                     {msg.text}
                   </div>
-                  <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+                  <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
                     {msg.role === 'user' ? '用户' : '小龙'} · {msg.time}
                   </div>
                 </div>
@@ -123,7 +123,7 @@ export default function NotifyPanel() {
                   <AlertTriangle size={12} style={{ color: '#ffa502', flexShrink: 0, marginTop: 2 }} />
                   <div className="flex-1 min-w-0">
                     <div style={{ color: 'var(--color-text-main)' }}>{msg.text}</div>
-                    <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+                    <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
                       {msg.time}
                     </div>
                   </div>

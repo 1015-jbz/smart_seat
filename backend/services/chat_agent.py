@@ -25,8 +25,14 @@ SYSTEM_PROMPT = """你是"小龙"，一个智能座舱语音助手。你在汽�
 - 不编造具体数据，不知道就说不知道"""
 
 
-async def chat(user_message: str, context: Optional[dict] = None) -> Optional[str]:
-    """调用 LLM（OpenAI 兼容），失败返回 None"""
+async def chat(user_message: str, context: Optional[dict] = None, history: Optional[list] = None) -> Optional[str]:
+    """调用 LLM（OpenAI 兼容），失败返回 None
+    
+    Args:
+        user_message: 用户当前消息
+        context: 上下文信息（城市、情绪、疲劳状态等）
+        history: 历史对话列表，每项为 {"role": "user"|"assistant", "content": "..."}
+    """
     if not LLM_API_KEY:
         return None
 
@@ -45,10 +51,15 @@ async def chat(user_message: str, context: Optional[dict] = None) -> Optional[st
         if parts:
             context_hint = "【当前状态】" + "；".join(parts) + "\n"
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{context_hint}用户说：{user_message}"},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    
+    # 添加历史对话（最多 10 轮，即 20 条消息）
+    if history:
+        for h in history[-20:]:
+            messages.append({"role": h["role"], "content": h["content"]})
+    
+    # 添加当前消息
+    messages.append({"role": "user", "content": f"{context_hint}用户说：{user_message}"})
 
     try:
         async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:

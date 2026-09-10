@@ -238,6 +238,23 @@ export function MusicProvider({ children }) {
     });
   }, []);
 
+  const setMode = useCallback((newMode) => {
+    if (['sequence', 'single', 'shuffle'].includes(newMode)) {
+      setModeState(newMode);
+      modeRef.current = newMode;
+    }
+  }, []);
+
+  const stop = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+    setIsPlaying(false);
+    setCurrentSong(null);
+  }, []);
+
   // ===== 搜索（本地过滤，曲库规模下性能足够）=====
   const searchSongs = useCallback((q) => {
     const kw = (q || '').trim().toLowerCase();
@@ -255,7 +272,7 @@ export function MusicProvider({ children }) {
       loadLibrary, refreshLibrary, searchSongs,
       currentSong, isPlaying, currentTime, duration,
       volume, mode, buffering, playerError,
-      playSong, togglePlay, pause, resume, next, prev, seek, changeVolume, cycleMode,
+      playSong, togglePlay, pause, resume, next, prev, seek, changeVolume, cycleMode, setMode, stop,
     }}>
       {children}
     </MusicContext.Provider>
@@ -298,9 +315,13 @@ export function useMusicVoiceCommand() {
     }
 
     // ---- 播放控制 ----
-    if (/暂停播放|停止播放|暂停|静音/.test(t)) {
+    if (/暂停播放|暂停|静音/.test(t)) {
       music.pause();
       return { reply: '音乐已暂停。' };
+    }
+    if (/停止播放|停止|关闭音乐|关掉音乐/.test(t)) {
+      music.stop();
+      return { reply: '音乐已停止。' };
     }
     if (/继续播放|恢复播放|继续/.test(t)) {
       music.resume();
@@ -315,6 +336,32 @@ export function useMusicVoiceCommand() {
       if (!music.currentSong) return { reply: '当前没有在播放的歌曲，请先点一首歌。' };
       music.prev();
       return { reply: '已切换到上一首。' };
+    }
+
+    // ---- 循环模式 ----
+    if (/单曲循环/.test(t)) {
+      music.setMode('single');
+      return { reply: '已切换到单曲循环模式。' };
+    }
+    if (/随机播放|随机模式/.test(t)) {
+      music.setMode('shuffle');
+      return { reply: '已切换到随机播放模式。' };
+    }
+    if (/顺序播放|列表循环/.test(t)) {
+      music.setMode('sequence');
+      return { reply: '已切换到顺序播放模式。' };
+    }
+    if (/切换模式|换个模式/.test(t)) {
+      music.cycleMode();
+      const modeNames = { sequence: '顺序播放', single: '单曲循环', shuffle: '随机播放' };
+      return { reply: `已切换到${modeNames[music.mode]}模式。` };
+    }
+
+    // ---- 当前歌曲查询 ----
+    if (/现在播放什么|这是什么歌|当前歌曲|现在放什么|正在播放/.test(t)) {
+      if (!music.currentSong) return { reply: '当前没有播放歌曲。' };
+      const modeNames = { sequence: '顺序播放', single: '单曲循环', shuffle: '随机播放' };
+      return { reply: `正在播放：《${music.currentSong.title}》，${music.currentSong.artist}，${modeNames[music.mode]}模式。` };
     }
 
     // ---- 点歌 ----

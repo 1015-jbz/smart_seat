@@ -3,7 +3,7 @@
  * 仅在有曲目加载后显示。
  */
 import { useNavigate } from 'react-router-dom';
-import { Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle, Music2, Volume2, VolumeX } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle, Music2, Volume2, VolumeX, X } from 'lucide-react';
 import { useMusic, coverOf, formatTime } from '../context/MusicStore';
 
 const MODE_META = {
@@ -16,7 +16,7 @@ export default function MiniPlayer() {
   const {
     currentSong, isPlaying, currentTime, duration,
     togglePlay, next, prev, seek, mode, cycleMode, buffering, playerError,
-    volume, changeVolume,
+    volume, changeVolume, stop,
   } = useMusic();
   const navigate = useNavigate();
 
@@ -77,6 +77,11 @@ export default function MiniPlayer() {
             className="w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-110"
             style={{ color: mode === 'sequence' ? 'var(--color-text-secondary)' : 'var(--color-primary)' }}>
             <ModeIcon size={15} />
+          </button>
+          <button onClick={stop} title="关闭音乐"
+            className="w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-110"
+            style={{ color: 'var(--color-text-secondary)' }}>
+            <X size={16} />
           </button>
         </div>
 
