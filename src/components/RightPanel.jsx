@@ -185,8 +185,8 @@ export default function RightPanel() {
   // ===== 唤醒成功回调：TTS 播完再开麦 =====
   const triggerWake = useCallback(async () => {
     setVoicePhase('tts');
-    pushMessage('assistant', '我在，请说您的需求。', 'tts');
-    await enqueueSpeech('我在，请说您的需求。', 'greeting');
+    pushMessage('assistant', '我在。', 'tts');
+    await enqueueSpeech('我在。', 'greeting');
     setVoicePhase('listening');
     startRecording();
   }, [pushMessage, enqueueSpeech, setVoicePhase, startRecording]);
@@ -300,21 +300,26 @@ export default function RightPanel() {
     });
   }, [setVoiceAlertCallback, pushAlert, enqueueSpeech]);
 
-  // ===== 人脸问候回调（保留原逻辑）=====
+  // ===== 人脸问候回调 =====
+  // 用 ref 存最新 weather，回调触发时读取实时值，避免用了旧 mock 温度
+  const weatherRef = useRef(weather);
+  useEffect(() => { weatherRef.current = weather; }, [weather]);
+
   useEffect(() => {
     setGreetingCallback(() => {
+      const w = weatherRef.current;
       const now = new Date();
       const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
       const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
       const hour = now.getHours();
       const timeGreet = hour < 6 ? '凌晨好' : hour < 12 ? '上午好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
       const city = location?.city || '';
-      const weatherDesc = weather?.description ? `，${weather.description}` : '';
-      const tempDesc = weather?.temperature != null ? `，${Math.round(weather.temperature)}度` : '';
-      const greeting = `${timeGreet}！今天是${dateStr}${city ? '，' + city : ''}${weatherDesc}${tempDesc}。智能座舱为您服务，祝您一路平安。`;
+      const weatherDesc = w?.description ? `，${w.description}` : '';
+      const tempDesc = w?.temperature != null ? `，${Math.round(w.temperature)}度` : '';
+      const greeting = `${timeGreet}！今天是${dateStr}${city ? '，' + city : ''}${weatherDesc}${tempDesc}。路上注意安全，一路顺风。`;
       enqueueSpeech(greeting, 'greeting');
     });
-  }, [setGreetingCallback, enqueueSpeech, location.city, weather.description, weather.temperature]);
+  }, [setGreetingCallback, enqueueSpeech, location.city]);
 
   return (
     <aside

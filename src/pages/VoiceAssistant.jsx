@@ -277,8 +277,8 @@ export default function VoiceAssistant() {
   // ===== 触发唤醒（手动场景：用户在输入框输入「小龙」或点快捷指令）=====
   const triggerWake = useCallback(async () => {
     setVoicePhase('tts');
-    pushMessage('assistant', '我在，请说您的需求。', 'tts');
-    await enqueueSpeech('我在，请说您的需求。', 'greeting');
+    pushMessage('assistant', '我在。', 'tts');
+    await enqueueSpeech('我在。', 'greeting');
     setVoicePhase('listening');
     startRecording();
   }, [pushMessage, enqueueSpeech, setVoicePhase, startRecording]);
