@@ -182,7 +182,7 @@ export default function RightPanel() {
         };
         recognition.onerror = (e) => {
           if (e.error === 'not-allowed') setMicError('麦克风权限被拒绝');
-          if (e.error === 'network') setMicError('语音识别服务连接失败（Chrome 依赖 Google 服务），请改用 Edge 浏览器');
+          if (e.error === 'network') setMicError('语音识别服务连接失败：无法连接 Google 语音服务器，请检查网络或使用代理');
         };
         recognition.onend = () => {
           if (streamRef.current && recRef.current === recognition && !processedRef.current) {
@@ -262,9 +262,12 @@ export default function RightPanel() {
           return;
         }
         if (e.error === 'network') {
-          setMicError('语音识别服务连接失败（Chrome 依赖 Google 服务，国内网络受限），请改用 Edge 浏览器');
-          wakeRecRef.current = null;
-          setWakeListening(false);
+          console.warn('语音识别 network 错误，3 秒后自动重试...');
+          setTimeout(() => {
+            if (wakeRecRef.current === null && !isRecordingRef.current) {
+              startWakeListen();
+            }
+          }, 3000);
           return;
         }
         if (e.error !== 'no-speech' && e.error !== 'aborted') {
