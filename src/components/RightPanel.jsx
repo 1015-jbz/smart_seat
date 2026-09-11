@@ -27,7 +27,7 @@ function isWakeWordHeard(raw) {
 }
 
 export default function RightPanel() {
-  const { setVoiceAlertCallback, setGreetingCallback, location, weather, camEmotion, camSafety } = useVehicle();
+  const { setVoiceAlertCallback, setGreetingCallback, resetGreeting, location, weather, camEmotion, camSafety } = useVehicle();
   const {
     pushAlert, enqueueSpeech, pushMessage,
     voicePhase, setVoicePhase, audioLevel, setAudioLevel, setEmotion,
@@ -301,25 +301,18 @@ export default function RightPanel() {
   }, [setVoiceAlertCallback, pushAlert, enqueueSpeech]);
 
   // ===== 人脸问候回调 =====
-  // 用 ref 存最新 weather，回调触发时读取实时值，避免用了旧 mock 温度
-  const weatherRef = useRef(weather);
-  useEffect(() => { weatherRef.current = weather; }, [weather]);
-
   useEffect(() => {
     setGreetingCallback(() => {
-      const w = weatherRef.current;
       const now = new Date();
       const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
       const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
       const hour = now.getHours();
       const timeGreet = hour < 6 ? '凌晨好' : hour < 12 ? '上午好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
       const city = location?.city || '';
-      const weatherDesc = w?.description ? `，${w.description}` : '';
-      const tempDesc = w?.temperature != null ? `，${Math.round(w.temperature)}度` : '';
-      const greeting = `${timeGreet}！今天是${dateStr}${city ? '，' + city : ''}${weatherDesc}${tempDesc}。路上注意安全，一路顺风。`;
+      const greeting = `${timeGreet}！今天是${dateStr}${city ? '，' + city : ''}。路上注意安全，一路顺风。`;
       enqueueSpeech(greeting, 'greeting');
     });
-  }, [setGreetingCallback, enqueueSpeech, location.city]);
+  }, [setGreetingCallback, enqueueSpeech]);
 
   return (
     <aside

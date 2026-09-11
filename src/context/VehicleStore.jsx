@@ -215,7 +215,7 @@ export function VehicleProvider({ children }) {
       // 只存关键字段，过滤掉 loading/error 等临时状态
       const toSave = {
         city: loc.city, district: loc.district || null, province: loc.province || null,
-        address: loc.address || null,
+        address: null,
         latitude: loc.latitude, longitude: loc.longitude,
         located: loc.located, source: loc.source, manual: loc.manual || false,
       };

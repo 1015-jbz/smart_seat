@@ -22,7 +22,11 @@ function renderLocationText(loc) {
   }[loc.source] || '📍 定位';
 
   let detail = loc.city;
-  if (loc.address) detail = loc.address;
+  if (loc.address) {
+    // 截断到市：取"XX市"之前的部分
+    const cityMatch = loc.address.match(/(.+?市)/);
+    detail = cityMatch ? cityMatch[1] : loc.city;
+  }
 
   return `${prefix}：${detail}`;
 }
