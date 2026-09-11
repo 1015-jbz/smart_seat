@@ -1,3 +1,7 @@
+# 智能座舱助手 - Python 依赖
+# 适用于 Linux / 龙芯平台
+
+# === 主后端 FastAPI ===
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 sqlalchemy>=2.0.0
@@ -5,21 +9,16 @@ pydantic>=2.0.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
 
-# ML dependencies - smart_cockpit emotion recognition (ONNX + OpenCV)
+# === 摄像头 + 表情识别 ===
+flask>=3.0.0
 numpy>=1.24.0
 opencv-python>=4.8.0
 onnxruntime>=1.15.0
 Pillow>=10.0.0
-
-# Camera server - Flask + MediaPipe (emotion & safety detection pipeline)
-flask>=3.0.0
 mediapipe>=0.10.0
 
-# TTS server (port 7862) - Edge TTS
+# === TTS 语音合成 ===
 edge-tts>=6.1.0
 
-# Whisper STT server (port 8767) - 优先 faster-whisper，回退 openai-whisper
-faster-whisper>=1.0.0
-
-# Windows-only: WinRT TTS fallback
+# === Windows 专用（Linux 自动跳过）===
 winsdk>=1.0.0b10; sys_platform == 'win32'
