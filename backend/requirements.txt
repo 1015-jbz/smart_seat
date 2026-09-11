@@ -15,7 +15,11 @@ Pillow>=10.0.0
 flask>=3.0.0
 mediapipe>=0.10.0
 
-# TTS server (port 7862) - 3-tier engine fallback: Edge TTS -> WinRT -> pyttsx3
+# TTS server (port 7862) - Edge TTS
 edge-tts>=6.1.0
+
+# Whisper STT server (port 8767) - 优先 faster-whisper，回退 openai-whisper
+faster-whisper>=1.0.0
+
+# Windows-only: WinRT TTS fallback
 winsdk>=1.0.0b10; sys_platform == 'win32'
-pyttsx3>=2.90

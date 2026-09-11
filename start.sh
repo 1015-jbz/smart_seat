@@ -14,6 +14,8 @@ PID_DIR="${PROJECT_DIR}/.pids"
 # 端口配置
 BACKEND_PORT=8000
 CAMERA_PORT=7861
+TTS_PORT=7862
+WHISPER_PORT=8767
 FRONTEND_PORT=5173
 
 # ---------- 颜色 ----------
@@ -43,7 +45,7 @@ cleanup() {
         fi
     done
     # 兜底：按端口杀残留
-    for port in ${BACKEND_PORT} ${CAMERA_PORT} ${FRONTEND_PORT}; do
+    for port in ${BACKEND_PORT} ${CAMERA_PORT} ${TTS_PORT} ${WHISPER_PORT} ${FRONTEND_PORT}; do
         local pids
         pids=$(lsof -ti:${port} 2>/dev/null || ss -lptn "sport = :${port}" 2>/dev/null | awk 'NR>1 {print $6}' | grep -oP 'pid=\K[0-9]+' | sort -u || true)
         if [ -n "$pids" ]; then
@@ -90,7 +92,7 @@ wait_for_service() {
     return 1
 }
 
-# ---------- 找 Node/npm（脚本内可能没加载 nvm）----------
+# ---------- 找 Node/npm ----------
 detect_node_npm() {
     NODE_BIN=""
     NPM_BIN=""
@@ -98,7 +100,6 @@ detect_node_npm() {
     if command -v node &>/dev/null; then NODE_BIN="$(command -v node)"; fi
     if command -v npm  &>/dev/null; then NPM_BIN="$(command -v npm)"; fi
     if command -v npx  &>/dev/null; then NPX_BIN="$(command -v npx)"; fi
-    # 常见位置兜底
     for p in /usr/local/bin/node /usr/bin/node /opt/node/bin/node \
              "$HOME/.nvm/versions/node"/*/bin/node "$HOME/node/bin/node"; do
         if [ -z "$NODE_BIN" ] && [ -x "$p" ]; then
@@ -109,11 +110,9 @@ detect_node_npm() {
         [ -x "$(dirname "$NODE_BIN")/npm" ] && NPM_BIN="$(dirname "$NODE_BIN")/npm"
         [ -x "$(dirname "$NODE_BIN")/npx" ] && NPX_BIN="$(dirname "$NODE_BIN")/npx"
     fi
-    # 尝试加载 nvm
     if [ -z "$NODE_BIN" ] || [ -z "$NPM_BIN" ]; then
         for f in "$HOME/.nvm/nvm.sh" /usr/share/nvm/nvm.sh /etc/profile.d/nvm.sh; do
             [ -f "$f" ] || continue
-            # shellcheck disable=SC1090
             source "$f" 2>/dev/null || true
             command -v nvm &>/dev/null && { nvm use default >/dev/null 2>&1 || nvm use system >/dev/null 2>&1 || true; }
             command -v node &>/dev/null && NODE_BIN="$(command -v node)"
@@ -131,26 +130,18 @@ detect_node_npm
 # 主流程
 # ============================================================
 info "=========================================="
-info "  智能座舱助手 - 启动中 (龙芯适配)"
+info "  智能座舱助手 - 启动中"
 info "=========================================="
 
-# ---------- 1. 启动后端 FastAPI :8000 ----------
-check_port ${BACKEND_PORT} "后端" || true
-
-log "backend" "启动 FastAPI (端口 ${BACKEND_PORT})..."
+# ---------- 激活虚拟环境 ----------
 cd "${BACKEND_DIR}"
 VENV_DIR="${BACKEND_DIR}/.venv"
 if [ -f "${VENV_DIR}/bin/activate" ]; then
-    # shellcheck disable=SC1091
     source "${VENV_DIR}/bin/activate"
+elif [ -f "${BACKEND_DIR}/venv/bin/activate" ]; then
+    source "${BACKEND_DIR}/venv/bin/activate"
 else
-    # 兼容旧的 venv 目录
-    if [ -f "${BACKEND_DIR}/venv/bin/activate" ]; then
-        # shellcheck disable=SC1091
-        source "${BACKEND_DIR}/venv/bin/activate"
-    else
-        warn "未找到虚拟环境 (.venv / venv)，使用系统 Python"
-    fi
+    warn "未找到虚拟环境，使用系统 Python"
 fi
 
 export PYTHONPATH="${BACKEND_DIR}:${PYTHONPATH}"
@@ -161,7 +152,10 @@ if ! python -c "import fastapi, uvicorn, sqlalchemy" >/dev/null 2>&1; then
     sleep 2
 fi
 
-mkdir -p "${BACKEND_DIR}/data"
+# ---------- 1. 启动后端 FastAPI :8000 ----------
+check_port ${BACKEND_PORT} "后端" || true
+
+log "backend" "启动 FastAPI (端口 ${BACKEND_PORT})..."
 nohup python -m uvicorn main:app \
     --host 0.0.0.0 --port ${BACKEND_PORT} --reload \
     > "${LOG_DIR}/backend.log" 2>&1 &
@@ -169,17 +163,12 @@ BACKEND_PID=$!
 echo ${BACKEND_PID} > "${PID_DIR}/backend.pid"
 log "backend" "PID: ${BACKEND_PID}"
 
-if wait_for_service "http://localhost:${BACKEND_PORT}/api/health" "后端" 25; then
-    info "后端健康检查通过 ✓"
-else
-    warn "后端启动超时，查看日志: tail -f ${LOG_DIR}/backend.log"
-fi
+wait_for_service "http://localhost:${BACKEND_PORT}/api/health" "后端" 25 || true
 
 # ---------- 2. 启动摄像头服务 Flask :7861 (可选) ----------
 CAMERA_OK=1
 if python -c "import cv2, flask" >/dev/null 2>&1; then
     check_port ${CAMERA_PORT} "摄像头" || true
-
     log "camera" "启动摄像头+表情识别 (端口 ${CAMERA_PORT})..."
     nohup python camera_server.py --port ${CAMERA_PORT} \
         > "${LOG_DIR}/camera.log" 2>&1 &
@@ -191,44 +180,85 @@ else
     warn "跳过摄像头服务 (缺少 cv2 / flask)"
 fi
 
+# ---------- 3. 启动 TTS 语音合成 :7862 (可选) ----------
+TTS_OK=1
+if python -c "import edge_tts" >/dev/null 2>&1; then
+    check_port ${TTS_PORT} "TTS" || true
+    log "tts" "启动 TTS 语音合成 (端口 ${TTS_PORT})..."
+    nohup python tts_server.py --port ${TTS_PORT} \
+        > "${LOG_DIR}/tts.log" 2>&1 &
+    TTS_PID=$!
+    echo ${TTS_PID} > "${PID_DIR}/tts.pid"
+    log "tts" "PID: ${TTS_PID}"
+    wait_for_service "http://localhost:${TTS_PORT}/api/health" "TTS" 15 || TTS_OK=0
+else
+    warn "跳过 TTS 服务 (缺少 edge_tts)"
+fi
+
+# ---------- 4. 启动 Whisper STT :8767 (可选) ----------
+WHISPER_OK=1
+if python -c "import whisper" >/dev/null 2>&1 || python -c "from faster_whisper import WhisperModel" >/dev/null 2>&1; then
+    check_port ${WHISPER_PORT} "Whisper" || true
+    log "whisper" "启动 Whisper 语音识别 (端口 ${WHISPER_PORT})..."
+    nohup python whisper_server.py --port ${WHISPER_PORT} \
+        > "${LOG_DIR}/whisper.log" 2>&1 &
+    WHISPER_PID=$!
+    echo ${WHISPER_PID} > "${PID_DIR}/whisper.pid"
+    log "whisper" "PID: ${WHISPER_PID}"
+    wait_for_service "http://localhost:${WHISPER_PORT}/api/health" "Whisper" 60 || WHISPER_OK=0
+else
+    warn "跳过 Whisper 服务 (缺少 whisper / faster_whisper)"
+fi
+
 # ============================================================
-# 完成 - 打印后端+摄像头地址
+# 后端服务启动完毕
 # ============================================================
 echo ""
 info "=========================================="
-info "  后端 & 摄像头 启动完毕"
+info "  后端服务启动完毕"
 info "=========================================="
 echo ""
 echo -e "  后端 API:    ${GREEN}http://localhost:${BACKEND_PORT}/api/v1${NC}"
 echo -e "  Swagger UI:  ${GREEN}http://localhost:${BACKEND_PORT}/docs${NC}"
-echo -e "  健康检查:    ${GREEN}http://localhost:${BACKEND_PORT}/api/health${NC}"
 if [ $CAMERA_OK -eq 1 ]; then
-    echo -e "  摄像头状态:  ${GREEN}http://localhost:${CAMERA_PORT}/api/state${NC}"
-    echo -e "  摄像头视频:  ${GREEN}http://localhost:${CAMERA_PORT}/video_feed${NC}"
+    echo -e "  摄像头:      ${GREEN}http://localhost:${CAMERA_PORT}/video_feed${NC}"
+fi
+if [ $TTS_OK -eq 1 ]; then
+    echo -e "  TTS 语音:    ${GREEN}http://localhost:${TTS_PORT}/api/health${NC}"
+fi
+if [ $WHISPER_OK -eq 1 ]; then
+    echo -e "  Whisper STT: ${GREEN}http://localhost:${WHISPER_PORT}/api/health${NC}"
 fi
 echo ""
-echo -e "  日志目录:    ${LOG_DIR}/"
-echo "    tail -f ${LOG_DIR}/backend.log    # 看后端"
-echo "    tail -f ${LOG_DIR}/camera.log     # 看摄像头"
-echo ""
 
-# ---------- 3. 启动前端 Vite :5173（前台运行，实时看报错）----------
+# ---------- 5. 启动前端 ----------
 cd "${PROJECT_DIR}"
 
 if [ -z "$NPM_BIN" ] || [ -z "$NODE_BIN" ]; then
-    err "未找到 node/npm，前端无法启动！"
-    err "请新开终端执行："
-    err "  export NVM_DIR=\"\$HOME/.nvm\" && source \"\$NVM_DIR/nvm.sh\" && nvm use default"
-    err "  cd ${PROJECT_DIR} && npm run dev"
-    # 不退出，保留后端和摄像头
-    while true; do sleep 3600; done
+    # 没有 Node.js，尝试用 dist 静态文件
+    if [ -f "dist/index.html" ]; then
+        info "未找到 Node.js，使用 Python 静态服务器托管 dist/"
+        check_port ${FRONTEND_PORT} "前端" || true
+        info "=========================================="
+        info "  前端页面: ${GREEN}http://localhost:${FRONTEND_PORT}${NC}"
+        info "  ${YELLOW}按 Ctrl+C 停止所有服务${NC}"
+        info "=========================================="
+        exec python -m http.server ${FRONTEND_PORT} --directory dist
+    else
+        err "未找到 node/npm 且 dist/ 不存在！"
+        err "请新开终端执行: npm install && npm run build"
+        while true; do sleep 3600; done
+    fi
 fi
 
 if [ ! -d "node_modules" ]; then
-    warn "node_modules 不存在，正在安装前端依赖 (npmmirror)..."
+    warn "node_modules 不存在，正在安装前端依赖..."
     "$NPM_BIN" install --no-audit --no-fund --registry=https://registry.npmmirror.com || {
-        err "前端依赖安装失败，请新开终端手动执行："
-        err "  cd ${PROJECT_DIR} && npm install --registry=https://registry.npmmirror.com"
+        err "前端依赖安装失败"
+        if [ -f "dist/index.html" ]; then
+            warn "使用 dist 静态文件托管"
+            exec python -m http.server ${FRONTEND_PORT} --directory dist
+        fi
         while true; do sleep 3600; done
     }
 fi
@@ -237,21 +267,17 @@ check_port ${FRONTEND_PORT} "前端" || true
 
 echo ""
 info "=========================================="
-info "  启动前端 Vite (前台运行，看实时日志)"
+info "  启动前端 Vite (前台运行)"
 info "  前端页面: ${GREEN}http://localhost:${FRONTEND_PORT}${NC}"
-info "  ${YELLOW}按 Ctrl+C 停止前端 + 后端 + 摄像头${NC}"
+info "  ${YELLOW}按 Ctrl+C 停止所有服务${NC}"
 info "=========================================="
 echo ""
 
-# 前台跑 Vite：不 nohup，不 &，直接跑
-# 好处：1) 报错直接看到；2) SIGINT 触发 trap cleanup 把后端一起带走
 export PATH
 [ -n "$NODE_BIN" ] && PATH="$(dirname "$NODE_BIN"):$PATH"
 
 if [ -f "node_modules/.bin/vite" ]; then
-    # 优先用本地 vite，不走 npx 中间层，龙芯上更稳
     exec "node_modules/.bin/vite" --host 0.0.0.0 --port ${FRONTEND_PORT}
 else
-    # 兜底走 npm run dev（vite.config.js 里已配 host+port）
     exec "$NPM_BIN" run dev
 fi
