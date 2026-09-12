@@ -91,11 +91,6 @@ def _preprocess_tts_text(text):
     text = re.sub(r'[？?]{2,}', '？', text)
     text = re.sub(r'[。…]{2,}', '。', text)
 
-    # ③ 句尾软化（25% 概率，不太频繁避免刻意感）
-    if text.endswith('。') and random.random() < 0.25:
-        softeners = ['呀。', '呢。', '吧。', '啦。', '嘛。']
-        text = text[:-1] + random.choice(softeners)
-
     return text
 
 
@@ -214,8 +209,8 @@ except ImportError:
 _edge_failures = 0
 _edge_disabled_until = 0
 _edge_lock = threading.Lock()
-_EDGE_MAX_FAILURES = 3
-_EDGE_DISABLE_DURATION = 300  # 5 分钟
+_EDGE_MAX_FAILURES = 10
+_EDGE_DISABLE_DURATION = 60  # 1 分钟
 
 # 启动校验出来的非法声线名（见 _validate_edge_voices）
 # edge-tts 对“声线名写错”和“网络抖动”都只回一句 No audio was received，
@@ -484,7 +479,7 @@ def _do_tts(text, role, emotion, offsets=None):
                 audio, mime = loop.run_until_complete(
                     asyncio.wait_for(
                         _generate_edge_tts(processed_text, role, emotion, offsets),
-                        timeout=8.0
+                        timeout=15.0
                     )
                 )
                 if audio and len(audio) > 0:

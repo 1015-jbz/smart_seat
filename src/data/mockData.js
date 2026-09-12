@@ -28,7 +28,7 @@ export const vehicleData = {
   tirePressure: [2.4, 2.5, 2.3, 2.4],
   totalMileage: 45832,
   battery: 82,
-  isDriving: true,
+  isDriving: false,
   idleTime: 0,
 };
 

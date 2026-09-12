@@ -167,17 +167,17 @@ _cached_safety = {
 _safety_lock = threading.Lock()
 
 # --- 检测阈值 ---
-_EAR_THRESHOLD = 0.20              # 眼睛闭合 EAR 阈值
-_MAR_YAWN_THRESHOLD = 0.6          # 哈欠 MAR 阈值
+_EAR_THRESHOLD = 0.16              # 眼睛闭合 EAR 阈值
+_MAR_YAWN_THRESHOLD = 0.70         # 哈欠 MAR 阈值
 
 # --- 事件→告警映射 ---
-_EYE_CLOSED_WARNING_DUR = 2.0      # 持续闭眼 >2s → high（中度疲劳）
-_EYE_CLOSED_CRITICAL_DUR = 4.0     # 持续闭眼 >4s → critical（重度疲劳）
+_EYE_CLOSED_WARNING_DUR = 4.0      # 持续闭眼 >4s → high（中度疲劳）
+_EYE_CLOSED_CRITICAL_DUR = 7.0     # 持续闭眼 >7s → critical（重度疲劳）
 
 # --- 告警冷却 ---
-_ALERT_HOLD_TIME = 3.0             # 告警最少保持时间（前端轮询是1.2s，3s足够读到）
-_YAWN_COOLDOWN = 30.0              # 两次哈欠告警最短间隔
-_EYE_COOLDOWN = 15.0               # 两次闭眼告警最短间隔
+_ALERT_HOLD_TIME = 5.0             # 告警最少保持时间
+_YAWN_COOLDOWN = 60.0              # 两次哈欠告警最短间隔
+_EYE_COOLDOWN = 25.0               # 两次闭眼告警最短间隔
 
 _was_eye_closed = False
 _eye_close_start_ts = 0.0

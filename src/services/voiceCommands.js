@@ -37,12 +37,12 @@ export async function handleWeatherCommand(text, location) {
     const weather = await api.weather(lat, lon);
     if (!weather || !weather.now) return null;
     const { now, forecast } = weather;
-    let reply = `${city}今天${now.condition}，气温${now.temperature}度，体感${now.feels_like}度。`;
-    if (now.wind_dir) reply += `${now.wind_dir}风${now.wind_speed}公里每小时。`;
+    let reply = `${city}今天${now.condition}，气温${now.temperature}度，体感${now.feelsLike}度。`;
+    if (now.windDir) reply += `${now.windDir}风${now.windSpeed}公里每小时。`;
     if (now.humidity) reply += `湿度${now.humidity}%。`;
     if (forecast && forecast.length > 0) {
       const today = forecast[0];
-      reply += `今天最低${today.temp_min}度，最高${today.temp_max}度。`;
+      reply += `今天最低${today.tempMin}度，最高${today.tempMax}度。`;
     }
     return reply;
   } catch (_) {
