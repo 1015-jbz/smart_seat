@@ -97,6 +97,13 @@
 
 3.2 龙芯 3A6000 笔记本安装（LoongArch64 + UOS）
 ----------------------------------------------------------------
+  说明：本项目最初适配目标为龙芯 2K0300 先锋派（512MB RAM），但因以下原因
+  放弃，转为适配龙芯 3A6000 笔记本：
+    · 2K0300 仅有 512MB RAM，不足以支撑多服务并行（后端+摄像头+TTS+前端）；
+    · 2K0300 无现代浏览器，React 前端无法渲染；
+    · 2K0300 部分 JS 指令缺少 LSX SIMD 支持，执行报 illegal instruction。
+  龙芯 3A6000 笔记本（8GB+ RAM，支持完整 LSX/LASX 指令集，预装 UOS +
+  龙芯浏览器 Chromium 138 内核）可完美运行全部功能。
 步骤 1：克隆代码
   git clone https://github.com/1015-jbz/smart_seat.git
   cd smart_seat
@@ -359,6 +366,15 @@ Q8  龙芯 3A6000 上如何使用？
     (4) 系统使用笔记本内置摄像头、麦克风、扬声器，无需外接设备；
     (5) onnxruntime / mediapipe / opencv / PyTorch 均有 LoongArch64
         原生 wheels，无需降级，全功能可用。
+
+Q8b 为什么不用龙芯 2K0300 先锋派？
+    我们最初适配目标为龙芯 2K0300 先锋派（512MB RAM，LoongArch64），
+    但经实测发现以下限制，无法作为座舱交互终端：
+    (1) 512MB 内存不足以支撑后端+摄像头+TTS+前端多服务并行，OOM 频繁；
+    (2) 无现代浏览器（仅有 dillo 等极简浏览器），React 前端无法渲染；
+    (3) 部分 JS 指令缺少 LSX SIMD 支持，执行报 illegal instruction。
+    结论：2K0300 适合作为轻量 IoT 网关，但不适合作为智能座舱交互终端。
+    已调整适配目标为龙芯 3A6000 笔记本（8GB+ RAM，完整 LSX/LASX 支持）。
 
 Q9  龙芯浏览器使用说明
     龙芯浏览器基于 Chromium 138 内核，原生支持 LoongArch64 架构：

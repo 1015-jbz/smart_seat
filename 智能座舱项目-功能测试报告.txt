@@ -449,6 +449,42 @@
   预期      不触发语音播报（疲劳评分仅为参考摆设）
   结论      PASS  ★关键回归项★
 
+【龙芯 2K0300 先锋派（LoongArch64）平台适配记录】
+
+  用例ID    LOONG-2K-01  onnxruntime LoongArch64 安装验证
+  前置条件  龙芯 2K0300 开发板（512MB RAM）+ Loongnix/Debian
+  操作步骤  pip install onnxruntime
+  预期结果  成功安装 LoongArch64 预编译 wheel
+  实际结果  安装成功，可加载 ONNX 模型并推理
+  结论      PASS（但受内存限制无法多服务并行）
+
+  用例ID    LOONG-2K-02  mediapipe LoongArch64 安装验证
+  前置条件  同上
+  操作步骤  pip install mediapipe
+  预期结果  成功安装 LoongArch64 预编译 wheel
+  实际结果  安装成功，FaceLandmarker 可运行
+  结论      PASS（但受内存限制无法多服务并行）
+
+  用例ID    LOONG-2K-03  浏览器前端渲染验证
+  前置条件  2K0300 已安装 dillo 等极简浏览器
+  操作步骤  用浏览器打开 React 前端页面
+  预期结果  前端页面正常渲染
+  实际结果  FAIL —— dillo 不支持现代 JS 语法（ES6+），React 无法运行；
+            尝试安装 Chromium 失败（依赖链不完整，内存不足）；
+            JS 执行报 illegal instruction（部分指令缺少 LSX SIMD 支持）
+  结论      FAIL —— 2K0300 无法运行现代 Web 前端
+
+  用例ID    LOONG-2K-04  多服务并行内存验证
+  前置条件  2K0300（512MB RAM）
+  操作步骤  同时启动后端 + 摄像头 + TTS + 前端
+  预期结果  4 个服务正常运行
+  实际结果  FAIL —— 512MB 内存不足以支撑多服务并行，OOM 频繁
+  结论      FAIL —— 2K0300 内存不足
+
+  适配结论：龙芯 2K0300 先锋派（512MB）因硬件限制（内存不足、缺乏现代浏览器、
+  LSX SIMD 支持不完整），无法作为智能座舱交互终端运行。已调整适配目标为
+  龙芯 3A6000 笔记本（8GB+ RAM），全栈部署验证通过。
+
 【龙芯 3A6000（LoongArch64）平台专项测试】
 
   用例ID    LOONG-01  setup.sh 安装验证

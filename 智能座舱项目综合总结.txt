@@ -71,14 +71,23 @@
   16.修复 TTS 回环、集成 DeepSeek AI、修复疲劳评分。
   17.优先使用浏览器 GPS 而非 IP 地理定位。
 
-### 阶段 C：龙芯平台适配
+### 阶段 C：龙芯平台适配（先 2K300，后 3A6000）
 
   18.添加龙芯（Loongson）平台的 setup / start 一键脚本。
   19.全局异常处理器 + 环境变量化 API 地址 + 代码清理。
   20.添加 README（含 Windows 与龙芯双平台安装指南）。
-  21.LoongArch 平台适配（onnxruntime / mediapipe 已有预编译
+  21.首次适配目标为龙芯 2K0300 先锋派（512MB RAM，LoongArch64）：
+      · 尝试安装 onnxruntime / mediapipe LoongArch64 wheels → 成功；
+      · 尝试安装 OpenCV LoongArch64 → 成功（需 Haar Cascade 降级方案备用）；
+      · 浏览器问题：2K300 无现代浏览器（仅有 dillo 等极简浏览器），
+        React 前端无法渲染，JS 执行报 illegal instruction（缺少 LSX SIMD 指令）；
+      · 结论：2K300 硬件算力不足（512MB RAM）、缺乏现代浏览器，
+        无法作为完整座舱交互终端运行。
+  22.调整适配目标为龙芯 3A6000 笔记本（8GB+ RAM，支持完整 LSX/LASX 指令集，
+      预装 UOS + 龙芯浏览器 Chromium 138 内核），全栈部署验证通过。
+  23.LoongArch 平台适配（onnxruntime / mediapipe 已有预编译
       LoongArch64 wheels，OpenCV 同步适配）。
-  22.疲劳检测灵敏度调优。
+  24.疲劳检测灵敏度调优。
   23.v2 疲劳算法 + 全局语音架构重构（前端 EWMA + Sustain
      Gate，VehicleStore 统一掌握语音告警节奏）。
   24.TTS 默认音色改为温柔女声（关键词选语音包 + pitch 1.15）。
@@ -574,19 +583,29 @@ smart_seat 采用前后端分离三层架构：
 
   | 类别       | 关键件                        | 预算     |
   |------------|-------------------------------|----------|
-  | 核心平台   | 龙芯 3A6000 笔记本（8GB+ RAM）| ——（已有）|
+  | 核心平台   | 龙芯 2K0300 开发板（512MB）   | ~330 元  |
   | 视觉       | 罗技 C270 USB 摄像头           | ~120 元  |
   | 音频       | 绿联 USB 麦克风 + USB 小音箱   | ~80 元   |
-  | 效果加分   | WS2812B 灯带 + 杜邦线          | ~20 元   |
+  | 效果加分   | WS2812B 灯带 +杜邦线          | ~20 元   |
   | 显示（选） | 7 寸 HDMI 电容触摸屏           | ~180 元  |
   | 网络（选） | USB WiFi 网卡（RTL8188）       | ~20 元   |
 
-  实际最终部署硬件：龙芯 3A6000 笔记本（8GB+ RAM），预装 UOS 操作系统。
-  笔记本内置摄像头、麦克风、扬声器、WiFi，无需额外购买外设。
+  适配结果：
+    · 2K0300 开发板（512MB）：已采购并完成初步适配，但因硬件限制放弃；
+    · 实际最终部署硬件：龙芯 3A6000 笔记本（8GB+ RAM），预装 UOS 操作系统；
+    · 笔记本内置摄像头、麦克风、扬声器、WiFi，无需额外购买外设。
 
 ## 6.3 硬件落地进展与关键约束
 
-  已完成（龙芯 3A6000 笔记本全栈部署验证）：
+  龙芯 2K0300 先锋派适配（已完成，结论：不适用）：
+    · 已采购龙芯 2K0300 开发板（512MB RAM，LoongArch64）；
+    · onnxruntime / mediapipe LoongArch64 wheels 可安装运行；
+    · 但 512MB 内存不足以支撑多服务并行（后端 + 摄像头 + TTS + 前端）；
+    · 无现代浏览器：仅有 dillo 等极简浏览器，无法渲染 React 前端；
+    · JS 执行报 illegal instruction：部分指令缺少 LSX SIMD 支持；
+    · 结论：2K0300 适合作为轻量 IoT 网关，不适合作为智能座舱交互终端。
+
+  龙芯 3A6000 笔记本适配（已完成，结论：全栈可用）：
     · UOS 操作系统安装并正常运行；
     · Python 3.11+ 环境配置完成，setup.sh 自动安装 LoongArch64 原生 wheels；
     · onnxruntime、mediapipe、opencv-python 均已安装 LoongArch64 预编译包；
@@ -617,6 +636,9 @@ smart_seat 采用前后端分离三层架构：
   | 风险                     | 应对                                       |
   |--------------------------|--------------------------------------------|
   | 端侧算力不足             | INT4 量化 + 模型级联（轻量初筛→大模型精判）|
+  | 2K300 无现代浏览器       | 已解决：适配目标切换为 3A6000 + 龙芯浏览器 |
+  | 2K300 缺少 LSX SIMD 指令 | 已解决：3A6000 支持完整 LSX/LASX 指令集    |
+  | 2K300 512MB 内存不足     | 已解决：3A6000 配备 8GB+ RAM               |
   | LoongArch 无预编译包     | 已解决：onnxruntime/mediapipe/opencv/PyTorch
                              均有 LoongArch64 原生 wheels |
   | IP 定位不准              | 手动选城 + localStorage 记忆               |
@@ -627,7 +649,7 @@ smart_seat 采用前后端分离三层架构：
 
   Phase 1（已完成）：Windows 原型开发，功能闭环；
   Phase 2（已完成）：功能联调与优化，音乐/多音色 TTS/GPS 已并入；
-  Phase 3（已完成）：LoongArch 移植，龙芯 3A6000 笔记本全栈部署验证通过；
+  Phase 3（已完成）：LoongArch 移植（2K300 适配后切换至 3A6000，全栈部署验证通过）；
   Phase 4（进行中）：端侧性能调优、答辩演示与实车/座舱模型集成。
 
 
