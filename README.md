@@ -27,7 +27,7 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/1015-jbz/smart_seat.git
+# git clone <你的仓库地址>（如需从远程克隆）
 cd smart_seat
 
 # 2. 安装后端依赖
@@ -66,7 +66,7 @@ npm run dev
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/1015-jbz/smart_seat.git
+# git clone <你的仓库地址>（如需从远程克隆）
 cd smart_seat
 
 # 2. 一键安装（自动适配 loongarch64，跳过无预编译包的组件）
